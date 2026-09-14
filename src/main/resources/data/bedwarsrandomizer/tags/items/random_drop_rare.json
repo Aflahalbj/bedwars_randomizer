@@ -1,0 +1,13 @@
+{
+  "replace": false,
+  "values": [
+    "minecraft:tnt",
+    "minecraft:ender_chest",
+    "minecraft:respawn_anchor",
+    "minecraft:beacon",
+    "minecraft:conduit",
+    "minecraft:dragon_egg",
+    "minecraft:slime_block",
+    "minecraft:elytra"
+  ]
+}

@@ -1,5 +1,6 @@
 package com.bedwarsrandomizer;
 
+import com.bedwarsrandomizer.block.ModBlocks;
 import com.bedwarsrandomizer.drop.ModLootModifiers;
 import com.bedwarsrandomizer.network.ModNetwork;
 import com.mojang.logging.LogUtils;
@@ -18,6 +19,8 @@ public class BedwarsRandomizer {
     public BedwarsRandomizer(FMLJavaModLoadingContext context) {
         IEventBus modBus = context.getModEventBus();
         ModLootModifiers.SERIALIZERS.register(modBus);
+        ModBlocks.register(modBus);
+        ModEntities.register(modBus);
         modBus.addListener(this::commonSetup);
         context.registerConfig(ModConfig.Type.COMMON, BwrConfig.SPEC);
     }

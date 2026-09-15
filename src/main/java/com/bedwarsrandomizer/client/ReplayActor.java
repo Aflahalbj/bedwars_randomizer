@@ -2,7 +2,15 @@ package com.bedwarsrandomizer.client;
 
 import com.bedwarsrandomizer.replay.ActorFrame;
 import com.bedwarsrandomizer.replay.ReplayData;
+import com.bedwarsrandomizer.game.GameSettings;
 import com.mojang.authlib.GameProfile;
+import com.mojang.authlib.minecraft.MinecraftProfileTexture;
+import com.mojang.authlib.properties.Property;
+import net.minecraft.client.Minecraft;
+import net.minecraft.resources.ResourceLocation;
+
+import javax.annotation.Nullable;
+import java.util.UUID;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.RemotePlayer;
 import net.minecraft.world.InteractionHand;
@@ -21,11 +29,43 @@ public class ReplayActor extends RemotePlayer {
     private static final int SWING_TICKS = 6;
 
     private int equipmentIndex = -1;
+    @Nullable
+    private ResourceLocation savedSkin;
+    @Nullable
+    private String savedModel;
 
     public ReplayActor(ClientLevel level, GameProfile profile) {
         super(level, profile);
         this.swingingArm = InteractionHand.MAIN_HAND;
         this.getEntityData().set(DATA_PLAYER_MODE_CUSTOMISATION, (byte) 0x7F); // show all skin layers
+    }
+
+    /** A puppet for a recorded player; {@code skin} is the one saved at registration (used when they're offline). */
+    public static ReplayActor create(ClientLevel level, UUID id, String name, @Nullable GameSettings.Skin skin) {
+        GameProfile profile = new GameProfile(id, name);
+        if (skin != null) profile.getProperties().put("textures", new Property("textures", skin.value(), skin.signature()));
+        ReplayActor actor = new ReplayActor(level, profile);
+        if (skin != null) {
+            Minecraft.getInstance().getSkinManager().registerSkins(profile, (type, location, texture) -> {
+                if (type == MinecraftProfileTexture.Type.SKIN) {
+                    actor.savedSkin = location;
+                    String model = texture.getMetadata("model");
+                    actor.savedModel = model == null ? "default" : model;
+                }
+            }, false);
+        }
+        return actor;
+    }
+
+    /** Online players keep their live skin from the tab list; offline ones use the saved skin. */
+    @Override
+    public ResourceLocation getSkinTextureLocation() {
+        return savedSkin != null && getPlayerInfo() == null ? savedSkin : super.getSkinTextureLocation();
+    }
+
+    @Override
+    public String getModelName() {
+        return savedModel != null && getPlayerInfo() == null ? savedModel : super.getModelName();
     }
 
     /** Places the puppet on a frame without interpolation, like a player coming into view. */

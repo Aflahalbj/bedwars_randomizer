@@ -1,6 +1,9 @@
 package com.bedwarsrandomizer.client;
 
 import com.bedwarsrandomizer.BedwarsRandomizer;
+import com.bedwarsrandomizer.game.GameSettings;
+import java.util.Map;
+import java.util.UUID;
 import com.bedwarsrandomizer.replay.ReplayData;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
@@ -20,6 +23,10 @@ public final class ClientReplayHandler {
     private static long returnFadeStart = -1;
 
     public static void play(ReplayData data) {
+        play(data, Map.of());
+    }
+
+    public static void play(ReplayData data, Map<UUID, GameSettings.Skin> skins) {
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null || mc.player == null) return;
         if (!mc.level.dimension().equals(data.dimension)) {
@@ -32,7 +39,7 @@ public final class ClientReplayHandler {
         if (playback != null) {
             playback.stop();
         }
-        playback = new ReplayPlayback(mc, mc.level, data);
+        playback = new ReplayPlayback(mc, mc.level, data, skins);
         playback.start();
     }
 

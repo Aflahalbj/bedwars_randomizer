@@ -5,10 +5,7 @@ import net.minecraftforge.common.ForgeConfigSpec;
 public final class BwrConfig {
     public static final ForgeConfigSpec SPEC;
 
-    public static final ForgeConfigSpec.IntValue BLOCK_CATEGORY_WEIGHT;
-    public static final ForgeConfigSpec.IntValue WEAPON_CATEGORY_WEIGHT;
-    public static final ForgeConfigSpec.IntValue TOOL_CATEGORY_WEIGHT;
-    public static final ForgeConfigSpec.IntValue ARMOR_CATEGORY_WEIGHT;
+    // random drop settings live in RandomizerSettings (edited in game with /bwr setting randomizer)
 
     public static final ForgeConfigSpec.IntValue REPLAY_SECONDS;
     public static final ForgeConfigSpec.IntValue POST_DEATH_TICKS;
@@ -18,14 +15,6 @@ public final class BwrConfig {
 
     static {
         ForgeConfigSpec.Builder b = new ForgeConfigSpec.Builder();
-
-        b.comment("Glazed terracotta random drops. Category weights decide which kind of item is rolled first.")
-                .push("randomDrops");
-        BLOCK_CATEGORY_WEIGHT = b.defineInRange("blockWeight", 55, 0, 1000);
-        WEAPON_CATEGORY_WEIGHT = b.defineInRange("weaponWeight", 15, 0, 1000);
-        TOOL_CATEGORY_WEIGHT = b.defineInRange("toolWeight", 15, 0, 1000);
-        ARMOR_CATEGORY_WEIGHT = b.defineInRange("armorWeight", 15, 0, 1000);
-        b.pop();
 
         b.comment("Kill replay recording.").push("replay");
         REPLAY_SECONDS = b.comment("How many seconds before a kill are kept.")

@@ -1,6 +1,12 @@
 package com.bedwarsrandomizer.network;
 
 import com.bedwarsrandomizer.BedwarsRandomizer;
+import com.bedwarsrandomizer.game.GameSettings;
+import net.minecraft.server.MinecraftServer;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.UUID;
 import com.bedwarsrandomizer.replay.ReplayData;
 import io.netty.buffer.Unpooled;
 import net.minecraft.network.FriendlyByteBuf;
@@ -47,6 +53,44 @@ public final class ModNetwork {
                 .decoder(ClipChunkPacket::decode)
                 .consumerMainThread(ClipChunkPacket::handle)
                 .add();
+        CHANNEL.messageBuilder(SelectionUpdatePacket.class, id++, NetworkDirection.PLAY_TO_SERVER)
+                .encoder(SelectionUpdatePacket::encode)
+                .decoder(SelectionUpdatePacket::decode)
+                .consumerMainThread(SelectionUpdatePacket::handle)
+                .add();
+        CHANNEL.messageBuilder(RandomizerScreenPacket.class, id++, NetworkDirection.PLAY_TO_CLIENT)
+                .encoder(RandomizerScreenPacket::encode)
+                .decoder(RandomizerScreenPacket::decode)
+                .consumerMainThread(RandomizerScreenPacket::handle)
+                .add();
+        CHANNEL.messageBuilder(RandomizerSavePacket.class, id++, NetworkDirection.PLAY_TO_SERVER)
+                .encoder(RandomizerSavePacket::encode)
+                .decoder(RandomizerSavePacket::decode)
+                .consumerMainThread(RandomizerSavePacket::handle)
+                .add();
+        CHANNEL.messageBuilder(GameSettingsScreenPacket.class, id++, NetworkDirection.PLAY_TO_CLIENT)
+                .encoder(GameSettingsScreenPacket::encode)
+                .decoder(GameSettingsScreenPacket::decode)
+                .consumerMainThread(GameSettingsScreenPacket::handle)
+                .add();
+        CHANNEL.messageBuilder(GameSettingsSavePacket.class, id++, NetworkDirection.PLAY_TO_SERVER)
+                .encoder(GameSettingsSavePacket::encode)
+                .decoder(GameSettingsSavePacket::decode)
+                .consumerMainThread(GameSettingsSavePacket::handle)
+                .add();
+        CHANNEL.messageBuilder(RefillNowPacket.class, id++, NetworkDirection.PLAY_TO_SERVER)
+                .encoder(RefillNowPacket::encode)
+                .decoder(RefillNowPacket::decode)
+                .consumerMainThread(RefillNowPacket::handle)
+                .add();
+    }
+
+    public static void sendGameSettingsScreen(ServerPlayer player, GameSettingsScreenPacket packet) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
+    }
+
+    public static void sendRandomizerScreen(ServerPlayer player, RandomizerScreenPacket packet) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
     }
 
     /** Whether this player's client has the mod (fake players and vanilla clients don't). */
@@ -59,7 +103,19 @@ public final class ModNetwork {
     }
 
     public static void sendReplay(ServerPlayer player, ReplayData data) {
-        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new PlayReplayPacket(data));
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new PlayReplayPacket(data, skinsFor(player.getServer(), data)));
+    }
+
+    /** Live skins of online players, and the skins saved at registration for everyone else in the replay. */
+    private static Map<UUID, GameSettings.Skin> skinsFor(MinecraftServer server, ReplayData data) {
+        Map<UUID, GameSettings.Skin> skins = new HashMap<>();
+        for (ReplayData.Actor actor : data.actors) {
+            if (!actor.isPlayer()) continue;
+            ServerPlayer online = server.getPlayerList().getPlayer(actor.id);
+            GameSettings.Skin skin = online != null ? GameSettings.skinOf(online.getGameProfile()) : GameSettings.get().savedSkin(actor.id);
+            if (skin != null) skins.put(actor.id, skin);
+        }
+        return skins;
     }
 
     public static void sendStop(ServerPlayer player) {

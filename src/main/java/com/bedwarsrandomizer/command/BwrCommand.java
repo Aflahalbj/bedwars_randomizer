@@ -1,6 +1,15 @@
 package com.bedwarsrandomizer.command;
 
+import com.bedwarsrandomizer.arena.Arena;
+import com.bedwarsrandomizer.game.BedwarsGame;
+import com.bedwarsrandomizer.game.GameSettings;
+import com.bedwarsrandomizer.network.GameSettingsScreenPacket;
+import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import net.minecraft.server.MinecraftServer;
+import com.bedwarsrandomizer.drop.DropCategory;
 import com.bedwarsrandomizer.drop.RandomDropPool;
+import com.bedwarsrandomizer.drop.RandomizerSource;
+import com.bedwarsrandomizer.network.RandomizerScreenPacket;
 import com.bedwarsrandomizer.network.ModNetwork;
 import com.bedwarsrandomizer.replay.ReplayData;
 import com.bedwarsrandomizer.replay.ReplayRecorder;
@@ -79,16 +88,51 @@ public final class BwrCommand {
         return builder.buildFuture();
     };
 
+    private static final SuggestionProvider<CommandSourceStack> HOSTS = (ctx, builder) -> {
+        for (GameSettings.Registered player : GameSettings.get().players()) {
+            if (player.host()) builder.suggest(player.name());
+        }
+        return builder.buildFuture();
+    };
+
+    private static final SuggestionProvider<CommandSourceStack> REGISTERED = (ctx, builder) -> {
+        for (GameSettings.Registered player : GameSettings.get().players()) builder.suggest(player.name());
+        return builder.buildFuture();
+    };
+
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("bwr")
-                .requires(source -> source.hasPermission(2))
-                .then(Commands.literal("start").executes(BwrCommand::start))
-                .then(Commands.literal("stop").executes(BwrCommand::stop))
-                .then(Commands.literal("droptest")
+                // everyone registered: the [Go to lobby] link
+                .then(Commands.literal("lobby").executes(BwrCommand::lobby))
+                .then(op("regis")
+                        .then(Commands.argument("players", EntityArgument.players())
+                                .executes(ctx -> registerPlayers(ctx, EntityArgument.getPlayers(ctx, "players")))))
+                .then(op("regisall").executes(ctx -> registerPlayers(ctx, ctx.getSource().getServer().getPlayerList().getPlayers())))
+                .then(op("unregis")
+                        .then(Commands.argument("player", StringArgumentType.word()).suggests(REGISTERED).executes(BwrCommand::unregisterPlayer)))
+                .then(op("unregisall").executes(BwrCommand::unregisterAll))
+                .then(op("host")
+                        .then(Commands.literal("add")
+                                .then(Commands.argument("players", EntityArgument.players())
+                                        .executes(ctx -> addHosts(ctx, EntityArgument.getPlayers(ctx, "players")))))
+                        .then(Commands.literal("remove")
+                                .then(Commands.argument("player", StringArgumentType.word()).suggests(HOSTS).executes(BwrCommand::removeHost)))
+                        .then(Commands.literal("clear").executes(BwrCommand::clearHosts)))
+                // the [Next round] / [End round] links
+                .then(Commands.literal("nextround").requires(BwrCommand::isHostOrOp).executes(BwrCommand::nextRound))
+                .then(Commands.literal("endround").requires(BwrCommand::isHostOrOp).executes(BwrCommand::endRounds))
+                .then(op("start").executes(BwrCommand::start))
+                .then(op("stop").executes(BwrCommand::stop))
+                .then(op("droptest")
                         .executes(ctx -> dropTest(ctx, 1000))
                         .then(Commands.argument("rolls", IntegerArgumentType.integer(1, 100000))
                                 .executes(ctx -> dropTest(ctx, IntegerArgumentType.getInteger(ctx, "rolls")))))
-                .then(Commands.literal("replay")
+                .then(op("setting")
+                        .executes(BwrCommand::openGameSettings)
+                        .then(Commands.literal("randomizer").executes(BwrCommand::openRandomizerSettings)))
+                .then(op("gotoarena").executes(BwrCommand::goToArena))
+                .then(op("replay")
+                        .then(Commands.literal("record").executes(BwrCommand::recordReplays))
                         .then(Commands.literal("list").executes(BwrCommand::list))
                         .then(Commands.literal("stop").executes(ctx -> stopReplay(ctx, null)))
                         .then(Commands.argument("targets", EntityArgument.players())
@@ -106,47 +150,211 @@ public final class BwrCommand {
                                         .executes(ctx -> stopReplay(ctx, EntityArgument.getPlayers(ctx, "targets")))))));
     }
 
+    private static LiteralArgumentBuilder<CommandSourceStack> op(String name) {
+        return Commands.literal(name).requires(source -> source.hasPermission(2));
+    }
+
     private static int start(CommandContext<CommandSourceStack> ctx) {
-        ReplayRecorder recorder = ReplayRecorder.get();
-        if (recorder.isRecording()) {
-            ctx.getSource().sendFailure(Component.literal("Bedwars Randomizer is already running."));
+        Component error = BedwarsGame.get().start(ctx.getSource().getServer(), ctx.getSource().getPlayer());
+        if (error != null) {
+            ctx.getSource().sendFailure(error);
             return 0;
         }
-        recorder.start();
-        ctx.getSource().sendSuccess(() -> prefix()
-                .append(Component.literal("Game started. Recording kill replays.").withStyle(ChatFormatting.GREEN)), true);
+        ctx.getSource().sendSuccess(() -> prefix().append(Component.literal("Bed Wars is starting!").withStyle(ChatFormatting.GREEN)), true);
         return 1;
     }
 
     private static int stop(CommandContext<CommandSourceStack> ctx) {
-        ReplayRecorder recorder = ReplayRecorder.get();
-        if (!recorder.isRecording()) {
-            ctx.getSource().sendFailure(Component.literal("Bedwars Randomizer is not running."));
+        MinecraftServer server = ctx.getSource().getServer();
+        boolean stopped = BedwarsGame.get().stop(server);
+        if (!stopped && ReplayRecorder.get().isRecording()) {
+            ReplayRecorder.get().stop(server);
+            stopped = true;
+        }
+        if (!stopped) {
+            ctx.getSource().sendFailure(Component.literal("No game is running."));
             return 0;
         }
-        recorder.stop(ctx.getSource().getServer());
         ctx.getSource().sendSuccess(() -> prefix()
                 .append(Component.literal("Game stopped. Saved replays are kept.").withStyle(ChatFormatting.YELLOW)), true);
+        return 1;
+    }
+
+    /** Kill replay recording without a game (dev tests). */
+    private static int recordReplays(CommandContext<CommandSourceStack> ctx) {
+        ReplayRecorder recorder = ReplayRecorder.get();
+        if (recorder.isRecording()) {
+            ctx.getSource().sendFailure(Component.literal("Already recording kill replays."));
+            return 0;
+        }
+        recorder.start();
+        ctx.getSource().sendSuccess(() -> prefix().append(Component.literal("Recording kill replays.").withStyle(ChatFormatting.GREEN)), true);
+        return 1;
+    }
+
+    private static int registerPlayers(CommandContext<CommandSourceStack> ctx, Collection<ServerPlayer> targets) {
+        GameSettings settings = GameSettings.get();
+        int added = 0;
+        for (ServerPlayer player : targets) {
+            if (settings.register(player)) added++;
+            BedwarsGame.sendLobbyInvite(player);
+        }
+        settings.save();
+        int newPlayers = added;
+        String names = settings.players().stream().map(GameSettings.Registered::name).collect(Collectors.joining(", "));
+        ctx.getSource().sendSuccess(() -> prefix().append(Component.literal("Registered " + targets.size() + " player(s), " + newPlayers
+                + " new. Now registered: " + names).withStyle(ChatFormatting.GREEN)), true);
+        return targets.size();
+    }
+
+    private static int unregisterPlayer(CommandContext<CommandSourceStack> ctx) {
+        GameSettings settings = GameSettings.get();
+        String name = StringArgumentType.getString(ctx, "player");
+        GameSettings.Registered player = settings.playerByName(name);
+        if (player == null) {
+            ctx.getSource().sendFailure(Component.literal(name + " is not registered."));
+            return 0;
+        }
+        settings.unregister(player.id());
+        settings.save();
+        ctx.getSource().sendSuccess(() -> prefix().append(Component.literal("Unregistered " + player.name() + ".").withStyle(ChatFormatting.YELLOW)), true);
+        return 1;
+    }
+
+    private static int unregisterAll(CommandContext<CommandSourceStack> ctx) {
+        GameSettings settings = GameSettings.get();
+        int count = settings.players().size();
+        settings.unregisterAll();
+        settings.save();
+        ctx.getSource().sendSuccess(() -> prefix().append(Component.literal("Unregistered all " + count + " player(s).").withStyle(ChatFormatting.YELLOW)), true);
+        return count;
+    }
+
+    private static boolean isHostOrOp(CommandSourceStack source) {
+        return source.hasPermission(2) || (source.getEntity() instanceof ServerPlayer player && GameSettings.get().isHost(player.getUUID()));
+    }
+
+    private static int addHosts(CommandContext<CommandSourceStack> ctx, Collection<ServerPlayer> targets) {
+        GameSettings settings = GameSettings.get();
+        for (ServerPlayer player : targets) {
+            boolean wasRegistered = settings.player(player.getUUID()) != null;
+            settings.setHost(player, true);
+            if (!wasRegistered) BedwarsGame.sendLobbyInvite(player);
+            player.sendSystemMessage(Component.literal("You are a Bed Wars host: you watch the rounds and decide when the next one starts.")
+                    .withStyle(ChatFormatting.GOLD));
+        }
+        settings.save();
+        String names = targets.stream().map(player -> player.getGameProfile().getName()).collect(Collectors.joining(", "));
+        ctx.getSource().sendSuccess(() -> prefix().append(Component.literal("Host(s): " + names + ". Hosts don't play.").withStyle(ChatFormatting.GREEN)), true);
+        return targets.size();
+    }
+
+    private static int removeHost(CommandContext<CommandSourceStack> ctx) {
+        GameSettings settings = GameSettings.get();
+        String name = StringArgumentType.getString(ctx, "player");
+        GameSettings.Registered player = settings.playerByName(name);
+        if (player == null || !player.host()) {
+            ctx.getSource().sendFailure(Component.literal(name + " is not a host."));
+            return 0;
+        }
+        settings.setHost(player.id(), false);
+        settings.save();
+        ctx.getSource().sendSuccess(() -> prefix().append(Component.literal(player.name() + " is no longer a host and plays again.").withStyle(ChatFormatting.YELLOW)), true);
+        return 1;
+    }
+
+    private static int clearHosts(CommandContext<CommandSourceStack> ctx) {
+        GameSettings settings = GameSettings.get();
+        int count = settings.clearHosts();
+        settings.save();
+        ctx.getSource().sendSuccess(() -> prefix().append(Component.literal("Removed " + count + " host(s).").withStyle(ChatFormatting.YELLOW)), true);
+        return count;
+    }
+
+    private static int nextRound(CommandContext<CommandSourceStack> ctx) {
+        Component error = BedwarsGame.get().nextRound(ctx.getSource().getServer(), ctx.getSource().getPlayer());
+        if (error != null) {
+            ctx.getSource().sendFailure(error);
+            return 0;
+        }
+        ctx.getSource().sendSuccess(() -> prefix().append(Component.literal("Next round starting!").withStyle(ChatFormatting.GREEN)), true);
+        return 1;
+    }
+
+    private static int endRounds(CommandContext<CommandSourceStack> ctx) {
+        BedwarsGame.get().endRounds(ctx.getSource().getServer());
+        return 1;
+    }
+
+    private static int lobby(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+        ServerPlayer player = ctx.getSource().getPlayerOrException();
+        if (GameSettings.get().player(player.getUUID()) == null && !ctx.getSource().hasPermission(2)) {
+            ctx.getSource().sendFailure(Component.literal("You are not registered for Bed Wars."));
+            return 0;
+        }
+        if (BedwarsGame.get().isActive()) {
+            ctx.getSource().sendFailure(Component.literal("A game is running right now."));
+            return 0;
+        }
+        if (!Arena.teleportToLobby(player)) {
+            ctx.getSource().sendFailure(Component.literal("The arena dimension is missing."));
+            return 0;
+        }
+        ctx.getSource().sendSuccess(() -> prefix().append(Component.literal("Welcome to the lobby!").withStyle(ChatFormatting.GREEN)), false);
+        return 1;
+    }
+
+    private static int openGameSettings(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+        ServerPlayer player = ctx.getSource().getPlayerOrException();
+        if (!ModNetwork.hasMod(player)) {
+            ctx.getSource().sendFailure(Component.literal("The settings screen needs the Bedwars Randomizer mod on your client."));
+            return 0;
+        }
+        ModNetwork.sendGameSettingsScreen(player, GameSettingsScreenPacket.create(ctx.getSource().getServer()));
+        return 1;
+    }
+
+    private static int openRandomizerSettings(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+        ServerPlayer player = ctx.getSource().getPlayerOrException();
+        if (!ModNetwork.hasMod(player)) {
+            ctx.getSource().sendFailure(Component.literal("The settings screen needs the Bedwars Randomizer mod on your client."));
+            return 0;
+        }
+        ModNetwork.sendRandomizerScreen(player, RandomizerScreenPacket.create(player.serverLevel()));
+        return 1;
+    }
+
+    private static int goToArena(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+        ServerPlayer player = ctx.getSource().getPlayerOrException();
+        ServerLevel arena = Arena.level(ctx.getSource().getServer());
+        if (arena == null) {
+            ctx.getSource().sendFailure(Component.literal("The arena dimension is missing."));
+            return 0;
+        }
+        Arena.ensurePasted(ctx.getSource().getServer());
+        Arena.teleport(player, arena);
+        ctx.getSource().sendSuccess(() -> prefix().append(Component.literal("Teleported to the arena.").withStyle(ChatFormatting.GREEN)), false);
         return 1;
     }
 
     /** Rolls the random-drop pool many times and prints the distribution, to check and tune rarity. */
     private static int dropTest(CommandContext<CommandSourceStack> ctx, int rolls) {
         ServerLevel level = ctx.getSource().getLevel();
-        RandomDropPool pool = RandomDropPool.get(level);
+        RandomDropPool pool = RandomDropPool.get(level, RandomizerSource.GLAZED_TERRACOTTA);
         RandomSource random = level.getRandom();
 
         Map<Item, Integer> counts = new HashMap<>();
-        Map<RandomDropPool.Category, Integer> perCategory = new EnumMap<>(RandomDropPool.Category.class);
+        Map<DropCategory, Integer> perCategory = new EnumMap<>(DropCategory.class);
         for (int i = 0; i < rolls; i++) {
-            ItemStack stack = pool.roll(random);
+            ItemStack stack = pool.roll(random, null);
             if (stack.isEmpty()) continue;
             counts.merge(stack.getItem(), 1, Integer::sum);
-            perCategory.merge(pool.categoryOf(stack.getItem()), 1, Integer::sum);
+            DropCategory category = pool.categoryOf(stack.getItem());
+            if (category != null) perCategory.merge(category, 1, Integer::sum);
         }
 
         StringBuilder summary = new StringBuilder("Rolled " + rolls + ":");
-        for (RandomDropPool.Category category : RandomDropPool.Category.values()) {
+        for (DropCategory category : DropCategory.values()) {
             summary.append(String.format(Locale.ROOT, "  %s %.1f%%", category.name().toLowerCase(Locale.ROOT),
                     100.0 * perCategory.getOrDefault(category, 0) / rolls));
         }

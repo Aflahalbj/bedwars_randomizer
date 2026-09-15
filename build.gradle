@@ -42,6 +42,24 @@ minecraft {
                 jvmArgs '-Xmx2G'
                 args '--quickPlaySingleplayer', 'bwrtest'
             }
+            // gradlew runClient -PgameTest : a whole game with Curtain fake players (Curtain jar in run/mods)
+            if (project.hasProperty('gameTest')) {
+                property 'bwr.gameTest', 'true'
+                jvmArgs '-Xmx2G'
+                args '--quickPlaySingleplayer', 'bwrtest'
+            }
+            // gradlew runClient -ParenaTest : drop pool rules, arena paste + protection, fireball vs glass, settings screen
+            if (project.hasProperty('arenaTest')) {
+                property 'bwr.arenaTest', 'true'
+                jvmArgs '-Xmx2G'
+                args '--quickPlaySingleplayer', 'bwrtest'
+            }
+            // gradlew runClient -PselectionTest : selection block paste check + team bed, screenshots in run/screenshots
+            if (project.hasProperty('selectionTest')) {
+                property 'bwr.selectionTest', 'true'
+                jvmArgs '-Xmx2G'
+                args '--quickPlaySingleplayer', 'bwrtest'
+            }
         }
 
         server {

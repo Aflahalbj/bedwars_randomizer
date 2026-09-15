@@ -3,7 +3,9 @@ package com.bedwarsrandomizer.client;
 import com.bedwarsrandomizer.replay.ActorFrame;
 import com.bedwarsrandomizer.replay.BlockChange;
 import com.bedwarsrandomizer.replay.ReplayData;
-import com.mojang.authlib.GameProfile;
+import com.bedwarsrandomizer.game.GameSettings;
+import java.util.Map;
+import java.util.UUID;
 import com.mojang.blaze3d.vertex.PoseStack;
 import io.netty.buffer.Unpooled;
 import net.minecraft.client.Camera;
@@ -77,6 +79,8 @@ public final class ReplayPlayback {
     private final Map<ReplayData.Actor, Puppet> puppets = new LinkedHashMap<>();
     private final Map<BlockPos, BlockState> originalBlocks = new HashMap<>();
     private final List<Take> takes = new ArrayList<>();
+    /** Skins saved at registration, for players who are offline now. */
+    private final Map<UUID, GameSettings.Skin> skins;
 
     private Marker camera;
     private ReplayDirector director;
@@ -102,18 +106,19 @@ public final class ReplayPlayback {
     private float shakeRoll;
     private boolean finished;
 
-    ReplayPlayback(Minecraft mc, ClientLevel level, ReplayData data) {
+    ReplayPlayback(Minecraft mc, ClientLevel level, ReplayData data, Map<UUID, GameSettings.Skin> skins) {
         this.mc = mc;
         this.level = level;
         this.data = data;
+        this.skins = skins;
 
         int last = Math.max(0, data.frameCount - 1);
         int death = Mth.clamp(data.deathFrame, 0, last);
         int afterDeath = Math.min(last, death + 10);
-        // the whole clip once, then only the final moments again from other angles
-        takes.add(new Take(TakeType.WIDE, 0, afterDeath, 0.5));
-        takes.add(new Take(TakeType.CRANE, Math.max(0, death - 20), afterDeath, 0.5));
-        takes.add(new Take(TakeType.ORBIT, Math.max(0, death - 12), last, 1.8));
+        // the whole clip once at normal speed (about 5 s), then only the kill again in slow motion from another side:
+        // about 8 s in total
+        takes.add(new Take(TakeType.WIDE, 0, afterDeath, 0.3));
+        takes.add(new Take(TakeType.ORBIT, Math.max(0, death - 8), afterDeath, 0.8));
     }
 
     ClientLevel level() {
@@ -153,7 +158,7 @@ public final class ReplayPlayback {
     @Nullable
     private Puppet createPuppet(ReplayData.Actor actor) {
         Entity entity = actor.isPlayer()
-                ? new ReplayActor(level, new GameProfile(actor.id, actor.name))
+                ? ReplayActor.create(level, actor.id, actor.name, skins.get(actor.id))
                 : actor.type.create(level);
         return entity == null ? null : new Puppet(entity);
     }
@@ -222,9 +227,9 @@ public final class ReplayPlayback {
     private double speed() {
         int death = data.deathFrame;
         return switch (take().type()) {
-            case WIDE -> replayTime < death - 6 ? 1.0 : 0.5;
+            case WIDE -> 1.0;
             case CRANE -> replayTime < death + 1 ? 0.35 : 0.5;
-            case ORBIT -> replayTime < death + 1 ? 0.18 : 0.4;
+            case ORBIT -> 0.5;
         };
     }
 

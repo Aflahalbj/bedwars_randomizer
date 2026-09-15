@@ -1,0 +1,9 @@
+{
+  "parent": "minecraft:block/orientable",
+  "textures": {
+    "top": "bedwarsrandomizer:block/selection_block_top",
+    "front": "bedwarsrandomizer:block/selection_block_front",
+    "side": "bedwarsrandomizer:block/selection_block_side",
+    "particle": "bedwarsrandomizer:block/selection_block_side"
+  }
+}

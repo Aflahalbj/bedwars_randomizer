@@ -105,7 +105,7 @@ public final class ReplayTestHarness {
                     "item replace entity Builder weapon.mainhand with minecraft:white_wool 64",
                     // Builder pillars up on wool: look straight down, jump and place a block underneath every jump
                     "player Builder look down",
-                    "bwr start",
+                    "bwr replay record",
                     "player Alex jump interval 14",
                     "player Killer jump interval 11",
                     "player Killer attack interval 20",

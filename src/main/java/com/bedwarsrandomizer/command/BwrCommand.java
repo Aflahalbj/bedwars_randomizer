@@ -11,13 +11,14 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.brigadier.suggestion.SuggestionProvider;
+import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
-import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.HoverEvent;
 import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -28,13 +29,54 @@ import net.minecraft.world.item.Items;
 import net.minecraftforge.registries.ForgeRegistries;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
+/**
+ * {@code /bwr start|stop|droptest} and
+ * {@code /bwr replay <targets> kill <killer> <victim> [id]}, {@code /bwr replay [targets] stop}, {@code /bwr replay list}.
+ */
 public final class BwrCommand {
 
+    /** Selectors with a short explanation, then the online players. */
+    private static final SuggestionProvider<CommandSourceStack> TARGETS = (ctx, builder) -> {
+        String typed = builder.getRemaining().toLowerCase(Locale.ROOT);
+        suggest(builder, typed, "@a", "@a - every player on the server");
+        suggest(builder, typed, "@p", "@p - the nearest player (you, when you run it yourself)");
+        suggest(builder, typed, "@r", "@r - one random player");
+        suggest(builder, typed, "@s", "@s - only you");
+        for (String name : ctx.getSource().getOnlinePlayerNames()) {
+            suggest(builder, typed, name, "Only " + name);
+        }
+        return builder.buildFuture();
+    };
+
     private static final SuggestionProvider<CommandSourceStack> KILLERS = (ctx, builder) -> {
-        Set<String> names = new LinkedHashSet<>(ReplayStorage.killerNames());
-        names.addAll(List.of(ctx.getSource().getServer().getPlayerNames()));
-        return SharedSuggestionProvider.suggest(names, builder);
+        String typed = builder.getRemaining().toLowerCase(Locale.ROOT);
+        for (String killer : ReplayStorage.killerNames()) {
+            int victims = ReplayStorage.victimNames(killer).size();
+            suggest(builder, typed, killer, "Killed " + victims + " player(s) in stored replays");
+        }
+        return builder.buildFuture();
+    };
+
+    private static final SuggestionProvider<CommandSourceStack> VICTIMS = (ctx, builder) -> {
+        String typed = builder.getRemaining().toLowerCase(Locale.ROOT);
+        String killer = StringArgumentType.getString(ctx, "killer");
+        for (String victim : ReplayStorage.victimNames(killer)) {
+            int count = ReplayStorage.between(killer, victim).size();
+            suggest(builder, typed, victim, count + " replay(s)");
+        }
+        return builder.buildFuture();
+    };
+
+    private static final SuggestionProvider<CommandSourceStack> IDS = (ctx, builder) -> {
+        String killer = StringArgumentType.getString(ctx, "killer");
+        String victim = StringArgumentType.getString(ctx, "victim");
+        long now = System.currentTimeMillis();
+        for (ReplayStorage.Entry entry : ReplayStorage.between(killer, victim)) {
+            builder.suggest(entry.number(), Component.literal(age(now, entry.data()) + ", " + entry.data().cause.verb));
+        }
+        return builder.buildFuture();
     };
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
@@ -47,17 +89,21 @@ public final class BwrCommand {
                         .then(Commands.argument("rolls", IntegerArgumentType.integer(1, 100000))
                                 .executes(ctx -> dropTest(ctx, IntegerArgumentType.getInteger(ctx, "rolls")))))
                 .then(Commands.literal("replay")
-                        .then(Commands.literal("kill")
-                                .then(Commands.argument("player", StringArgumentType.word())
-                                        .suggests(KILLERS)
-                                        .executes(ctx -> playKill(ctx, null))
-                                        .then(Commands.argument("viewers", EntityArgument.players())
-                                                .executes(ctx -> playKill(ctx, EntityArgument.getPlayers(ctx, "viewers"))))))
                         .then(Commands.literal("list").executes(BwrCommand::list))
-                        .then(Commands.literal("stop")
-                                .executes(ctx -> stopReplay(ctx, null))
-                                .then(Commands.argument("viewers", EntityArgument.players())
-                                        .executes(ctx -> stopReplay(ctx, EntityArgument.getPlayers(ctx, "viewers")))))));
+                        .then(Commands.literal("stop").executes(ctx -> stopReplay(ctx, null)))
+                        .then(Commands.argument("targets", EntityArgument.players())
+                                .suggests(TARGETS)
+                                .then(Commands.literal("kill")
+                                        .then(Commands.argument("killer", StringArgumentType.word())
+                                                .suggests(KILLERS)
+                                                .then(Commands.argument("victim", StringArgumentType.word())
+                                                        .suggests(VICTIMS)
+                                                        .executes(ctx -> playKill(ctx, null))
+                                                        .then(Commands.argument("id", IntegerArgumentType.integer(1))
+                                                                .suggests(IDS)
+                                                                .executes(ctx -> playKill(ctx, IntegerArgumentType.getInteger(ctx, "id")))))))
+                                .then(Commands.literal("stop")
+                                        .executes(ctx -> stopReplay(ctx, EntityArgument.getPlayers(ctx, "targets")))))));
     }
 
     private static int start(CommandContext<CommandSourceStack> ctx) {
@@ -124,15 +170,26 @@ public final class BwrCommand {
         return counts.size();
     }
 
-    private static int playKill(CommandContext<CommandSourceStack> ctx, Collection<ServerPlayer> viewers) {
+    private static int playKill(CommandContext<CommandSourceStack> ctx, Integer id) throws CommandSyntaxException {
         CommandSourceStack source = ctx.getSource();
-        String name = StringArgumentType.getString(ctx, "player");
-        ReplayData data = ReplayStorage.latest(name);
-        if (data == null) {
-            source.sendFailure(Component.literal("No recorded kills for " + name
-                    + (ReplayRecorder.get().isRecording() ? "." : ". Start recording with /bwr start.")));
+        Collection<ServerPlayer> targets = EntityArgument.getPlayers(ctx, "targets");
+        String killer = StringArgumentType.getString(ctx, "killer");
+        String victim = StringArgumentType.getString(ctx, "victim");
+
+        ReplayStorage.Entry entry = ReplayStorage.find(killer, victim, id);
+        if (entry == null) {
+            List<ReplayStorage.Entry> available = ReplayStorage.between(killer, victim);
+            if (available.isEmpty()) {
+                source.sendFailure(Component.literal("No replay of " + killer + " killing " + victim
+                        + (ReplayRecorder.get().isRecording() ? "." : ". Start recording with /bwr start.")));
+            } else {
+                String numbers = available.stream().map(e -> String.valueOf(e.number())).collect(Collectors.joining(", "));
+                source.sendFailure(Component.literal("No replay #" + id + " of " + killer + " killing " + victim
+                        + ". Available: " + numbers));
+            }
             return 0;
         }
+        ReplayData data = entry.data();
 
         ReplayData packet = ModNetwork.fitToPacket(data);
         if (packet == null) {
@@ -140,7 +197,6 @@ public final class BwrCommand {
             return 0;
         }
 
-        Collection<ServerPlayer> targets = viewers != null ? viewers : source.getServer().getPlayerList().getPlayers();
         int sent = 0;
         int missingMod = 0;
         int otherDimension = 0;
@@ -161,7 +217,7 @@ public final class BwrCommand {
                 .append(Component.literal(data.killerName).withStyle(ChatFormatting.RED))
                 .append(Component.literal(" ⚔ ").withStyle(ChatFormatting.WHITE))
                 .append(Component.literal(data.victimName).withStyle(ChatFormatting.GRAY))
-                .append(Component.literal(" for " + count + " player(s)").withStyle(ChatFormatting.GRAY)), true);
+                .append(Component.literal(" #" + entry.number() + " for " + count + " player(s)").withStyle(ChatFormatting.GRAY)), true);
         if (missingMod > 0) {
             source.sendFailure(Component.literal(missingMod + " player(s) skipped: mod not installed on their client."));
         }
@@ -172,24 +228,27 @@ public final class BwrCommand {
     }
 
     private static int list(CommandContext<CommandSourceStack> ctx) {
-        List<ReplayData> replays = ReplayStorage.all();
+        List<ReplayStorage.Entry> replays = ReplayStorage.all();
         if (replays.isEmpty()) {
             ctx.getSource().sendFailure(Component.literal("No kill replays recorded yet."));
             return 0;
         }
-        ctx.getSource().sendSuccess(() -> prefix().append(Component.literal("Recorded kills (newest first):")
+        ctx.getSource().sendSuccess(() -> prefix().append(Component.literal("Recorded kills (newest first, click to watch):")
                 .withStyle(ChatFormatting.GRAY)), false);
         long now = System.currentTimeMillis();
-        for (ReplayData data : replays.subList(0, Math.min(10, replays.size()))) {
-            long seconds = (now - data.createdAt) / 1000;
-            String command = "/bwr replay kill " + data.killerName;
+        for (ReplayStorage.Entry entry : replays.subList(0, Math.min(10, replays.size()))) {
+            ReplayData data = entry.data();
+            String command = watchCommand("@s", data, entry.number());
             MutableComponent line = Component.literal(" ▶ ").withStyle(ChatFormatting.AQUA)
                     .append(Component.literal(data.killerName).withStyle(ChatFormatting.RED))
                     .append(Component.literal(" ⚔ ").withStyle(ChatFormatting.WHITE))
                     .append(Component.literal(data.victimName).withStyle(ChatFormatting.GRAY))
-                    .append(Component.literal("  (" + data.cause.verb + ", " + seconds + "s ago)")
+                    .append(Component.literal(" #" + entry.number()).withStyle(ChatFormatting.YELLOW))
+                    .append(Component.literal("  (" + data.cause.verb + ", " + age(now, data) + ")")
                             .withStyle(ChatFormatting.DARK_GRAY))
-                    .withStyle(style -> style.withClickEvent(new ClickEvent(ClickEvent.Action.SUGGEST_COMMAND, command)));
+                    .withStyle(style -> style
+                            .withClickEvent(new ClickEvent(ClickEvent.Action.SUGGEST_COMMAND, command))
+                            .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, Component.literal(command))));
             ctx.getSource().sendSuccess(() -> line, false);
         }
         return replays.size();
@@ -204,6 +263,22 @@ public final class BwrCommand {
         }
         ctx.getSource().sendSuccess(() -> prefix().append(Component.literal("Replay stopped.").withStyle(ChatFormatting.GRAY)), true);
         return targets.size();
+    }
+
+    /** {@code /bwr replay <targets> kill <killer> <victim> <id>} for a stored replay. */
+    public static String watchCommand(String targets, ReplayData data, int number) {
+        return "/bwr replay " + targets + " kill " + data.killerName + " " + data.victimName + " " + number;
+    }
+
+    private static void suggest(SuggestionsBuilder builder, String typed, String text, String tooltip) {
+        if (text.toLowerCase(Locale.ROOT).startsWith(typed)) {
+            builder.suggest(text, Component.literal(tooltip));
+        }
+    }
+
+    private static String age(long now, ReplayData data) {
+        long seconds = Math.max(0, (now - data.createdAt) / 1000);
+        return seconds < 60 ? seconds + "s ago" : (seconds / 60) + "m ago";
     }
 
     private static MutableComponent prefix() {

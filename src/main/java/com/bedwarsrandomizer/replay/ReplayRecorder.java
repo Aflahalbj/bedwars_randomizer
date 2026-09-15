@@ -2,6 +2,7 @@ package com.bedwarsrandomizer.replay;
 
 import com.bedwarsrandomizer.BedwarsRandomizer;
 import com.bedwarsrandomizer.BwrConfig;
+import com.bedwarsrandomizer.command.BwrCommand;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.ClickEvent;
@@ -266,13 +267,13 @@ public final class ReplayRecorder {
         ReplayData data = new ReplayData(kill.replayId(), System.currentTimeMillis(),
                 kill.killerId(), kill.killerName(), kill.victimId(), kill.victimName(),
                 kill.dimension(), kill.cause(), kill.weapon(), frameCount, deathFrame, actors, blockChanges, false);
-        ReplayStorage.add(data);
+        int number = ReplayStorage.add(data);
         ReplayDebugDump.write(server, data);
         ClipAssembler.serverReplayFinished(server, data);
 
-        BedwarsRandomizer.LOGGER.info("Saved kill replay: {} killed {} ({} frames, {} players, {} block changes)",
-                data.killerName, data.victimName, frameCount, actors.size(), blockChanges.size());
-        announce(server, data);
+        BedwarsRandomizer.LOGGER.info("Saved kill replay: {} killed {} #{} ({} frames, {} players, {} block changes)",
+                data.killerName, data.victimName, number, frameCount, actors.size(), blockChanges.size());
+        announce(server, data, number);
     }
 
     /** Makes the victim lie dead from the death frame on, even if they respawned during the tail. */
@@ -308,8 +309,8 @@ public final class ReplayRecorder {
         return dx * dx + dy * dy + dz * dz <= rangeSq;
     }
 
-    private static void announce(MinecraftServer server, ReplayData data) {
-        String command = "/bwr replay kill " + data.killerName;
+    private static void announce(MinecraftServer server, ReplayData data, int number) {
+        String command = BwrCommand.watchCommand("@s", data, number);
         Component message = Component.literal("[BWR] ").withStyle(ChatFormatting.GOLD)
                 .append(Component.literal("Kill replay saved: ").withStyle(ChatFormatting.GRAY))
                 .append(Component.literal(data.killerName).withStyle(ChatFormatting.RED))

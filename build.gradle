@@ -39,6 +39,7 @@ minecraft {
             // (default: scripted fight; curtain: two Curtain fake players really fight, needs the Curtain jar in run/mods)
             if (project.hasProperty('replayTest')) {
                 property 'bwr.replayTest', project.property('replayTest') ?: 'scripted'
+                jvmArgs '-Xmx2G'
                 args '--quickPlaySingleplayer', 'bwrtest'
             }
         }

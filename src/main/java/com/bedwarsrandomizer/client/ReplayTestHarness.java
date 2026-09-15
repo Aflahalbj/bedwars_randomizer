@@ -128,7 +128,7 @@ public final class ReplayTestHarness {
                 replayRequested = true;
                 BedwarsRandomizer.LOGGER.info("[replayTest] playing {} replay", latest.exact ? "client-recorded" : "server-recorded");
                 runCommands(mc, List.of("player Killer stop", "player Builder stop",
-                        "bwr replay kill Killer " + mc.player.getGameProfile().getName()));
+                        "bwr replay " + mc.player.getGameProfile().getName() + " kill Killer Alex"));
             }
         } else if (ticksInWorld == 160 + 20 * 60 && !replayRequested) {
             BedwarsRandomizer.LOGGER.warn("[replayTest] no kill happened within a minute");

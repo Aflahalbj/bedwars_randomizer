@@ -4,6 +4,11 @@ import com.bedwarsrandomizer.arena.Arena;
 import com.bedwarsrandomizer.game.BedwarsGame;
 import com.bedwarsrandomizer.game.GameSettings;
 import com.bedwarsrandomizer.network.GameSettingsScreenPacket;
+import com.bedwarsrandomizer.network.MapSelectPacket;
+import net.minecraft.core.BlockPos;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
+import net.minecraft.world.level.levelgen.Heightmap;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import net.minecraft.server.MinecraftServer;
 import com.bedwarsrandomizer.drop.DropCategory;
@@ -102,8 +107,12 @@ public final class BwrCommand {
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("bwr")
-                // everyone registered: the [Go to lobby] link
-                .then(Commands.literal("lobby").executes(BwrCommand::lobby))
+                // registered players and operators
+                .then(Commands.literal("gotolobby").executes(BwrCommand::goToLobby))
+                .then(Commands.literal("gotoworld").executes(BwrCommand::goToWorld))
+                // the [Teleport all to lobby] link
+                .then(Commands.literal("lobbyall").requires(BwrCommand::isHostOrOp).executes(BwrCommand::lobbyAll))
+                .then(Commands.literal("maps").requires(BwrCommand::isHostOrOp).executes(BwrCommand::openMaps))
                 .then(op("regis")
                         .then(Commands.argument("players", EntityArgument.players())
                                 .executes(ctx -> registerPlayers(ctx, EntityArgument.getPlayers(ctx, "players")))))
@@ -130,7 +139,6 @@ public final class BwrCommand {
                 .then(op("setting")
                         .executes(BwrCommand::openGameSettings)
                         .then(Commands.literal("randomizer").executes(BwrCommand::openRandomizerSettings)))
-                .then(op("gotoarena").executes(BwrCommand::goToArena))
                 .then(op("replay")
                         .then(Commands.literal("record").executes(BwrCommand::recordReplays))
                         .then(Commands.literal("list").executes(BwrCommand::list))
@@ -197,9 +205,10 @@ public final class BwrCommand {
         int added = 0;
         for (ServerPlayer player : targets) {
             if (settings.register(player)) added++;
-            BedwarsGame.sendLobbyInvite(player);
+            BedwarsGame.notifyRegistered(player);
         }
         settings.save();
+        BedwarsGame.sendLobbyLink(ctx.getSource().getServer(), ctx.getSource().getPlayer());
         int newPlayers = added;
         String names = settings.players().stream().map(GameSettings.Registered::name).collect(Collectors.joining(", "));
         ctx.getSource().sendSuccess(() -> prefix().append(Component.literal("Registered " + targets.size() + " player(s), " + newPlayers
@@ -239,11 +248,12 @@ public final class BwrCommand {
         for (ServerPlayer player : targets) {
             boolean wasRegistered = settings.player(player.getUUID()) != null;
             settings.setHost(player, true);
-            if (!wasRegistered) BedwarsGame.sendLobbyInvite(player);
+            if (!wasRegistered) BedwarsGame.notifyRegistered(player);
             player.sendSystemMessage(Component.literal("You are a Bed Wars host: you watch the rounds and decide when the next one starts.")
                     .withStyle(ChatFormatting.GOLD));
         }
         settings.save();
+        BedwarsGame.sendLobbyLink(ctx.getSource().getServer(), ctx.getSource().getPlayer());
         String names = targets.stream().map(player -> player.getGameProfile().getName()).collect(Collectors.joining(", "));
         ctx.getSource().sendSuccess(() -> prefix().append(Component.literal("Host(s): " + names + ". Hosts don't play.").withStyle(ChatFormatting.GREEN)), true);
         return targets.size();
@@ -286,22 +296,75 @@ public final class BwrCommand {
         return 1;
     }
 
-    private static int lobby(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
-        ServerPlayer player = ctx.getSource().getPlayerOrException();
+    /** Registered players and operators may move themselves, but not while they play (or host) a round. */
+    private static boolean mayTeleportSelf(CommandContext<CommandSourceStack> ctx, ServerPlayer player) {
         if (GameSettings.get().player(player.getUUID()) == null && !ctx.getSource().hasPermission(2)) {
             ctx.getSource().sendFailure(Component.literal("You are not registered for Bed Wars."));
-            return 0;
+            return false;
         }
-        if (BedwarsGame.get().isActive()) {
-            ctx.getSource().sendFailure(Component.literal("A game is running right now."));
-            return 0;
+        BedwarsGame game = BedwarsGame.get();
+        if (game.isActive() && (game.teamOf(player.getUUID()) != null || game.isHostInRound(player.getUUID()))) {
+            ctx.getSource().sendFailure(Component.literal("You are in the running round."));
+            return false;
         }
+        return true;
+    }
+
+    private static int goToLobby(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+        ServerPlayer player = ctx.getSource().getPlayerOrException();
+        if (!mayTeleportSelf(ctx, player)) return 0;
         if (!Arena.teleportToLobby(player)) {
             ctx.getSource().sendFailure(Component.literal("The arena dimension is missing."));
             return 0;
         }
+        player.playNotifySound(SoundEvents.ENDERMAN_TELEPORT, SoundSource.PLAYERS, 1.0F, 1.0F);
         ctx.getSource().sendSuccess(() -> prefix().append(Component.literal("Welcome to the lobby!").withStyle(ChatFormatting.GREEN)), false);
         return 1;
+    }
+
+    private static int goToWorld(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+        ServerPlayer player = ctx.getSource().getPlayerOrException();
+        if (!mayTeleportSelf(ctx, player)) return 0;
+        ServerLevel overworld = ctx.getSource().getServer().overworld();
+        BlockPos spawn = overworld.getHeightmapPos(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, overworld.getSharedSpawnPos());
+        player.teleportTo(overworld, spawn.getX() + 0.5, spawn.getY(), spawn.getZ() + 0.5, player.getYRot(), player.getXRot());
+        player.playNotifySound(SoundEvents.ENDERMAN_TELEPORT, SoundSource.PLAYERS, 1.0F, 1.0F);
+        ctx.getSource().sendSuccess(() -> prefix().append(Component.literal("Back in the overworld.").withStyle(ChatFormatting.GREEN)), false);
+        return 1;
+    }
+
+    /** {@code /bwr maps}: the map choice screen, only changing the arena map. */
+    private static int openMaps(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+        ServerPlayer player = ctx.getSource().getPlayerOrException();
+        if (!ModNetwork.hasMod(player)) {
+            ctx.getSource().sendFailure(Component.literal("The map screen needs the Bedwars Randomizer mod on your client."));
+            return 0;
+        }
+        if (BedwarsGame.get().isActive()) {
+            ctx.getSource().sendFailure(Component.literal("A round is running; the map can't change now."));
+            return 0;
+        }
+        MinecraftServer server = ctx.getSource().getServer();
+        ModNetwork.sendMapSelect(player, new MapSelectPacket(Arena.availableMaps(server), GameSettings.get().map, false));
+        return 1;
+    }
+
+    /** [Teleport all to lobby]: the map choice screen, or straight to the lobby when the clicker has no mod. */
+    private static int lobbyAll(CommandContext<CommandSourceStack> ctx) {
+        MinecraftServer server = ctx.getSource().getServer();
+        if (BedwarsGame.get().isActive()) {
+            ctx.getSource().sendFailure(Component.literal("A round is running right now."));
+            return 0;
+        }
+        ServerPlayer player = ctx.getSource().getPlayer();
+        if (player != null && ModNetwork.hasMod(player)) {
+            ModNetwork.sendMapSelect(player, new MapSelectPacket(Arena.availableMaps(server), GameSettings.get().map, true));
+            return 1;
+        }
+        int count = BedwarsGame.teleportAllToLobby(server);
+        ctx.getSource().sendSuccess(() -> prefix().append(Component.literal("Teleported " + count + " registered player(s) to the lobby.")
+                .withStyle(ChatFormatting.GREEN)), true);
+        return count;
     }
 
     private static int openGameSettings(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
@@ -321,19 +384,6 @@ public final class BwrCommand {
             return 0;
         }
         ModNetwork.sendRandomizerScreen(player, RandomizerScreenPacket.create(player.serverLevel()));
-        return 1;
-    }
-
-    private static int goToArena(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
-        ServerPlayer player = ctx.getSource().getPlayerOrException();
-        ServerLevel arena = Arena.level(ctx.getSource().getServer());
-        if (arena == null) {
-            ctx.getSource().sendFailure(Component.literal("The arena dimension is missing."));
-            return 0;
-        }
-        Arena.ensurePasted(ctx.getSource().getServer());
-        Arena.teleport(player, arena);
-        ctx.getSource().sendSuccess(() -> prefix().append(Component.literal("Teleported to the arena.").withStyle(ChatFormatting.GREEN)), false);
         return 1;
     }
 

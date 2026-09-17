@@ -44,7 +44,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Optional;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.TreeMap;
+import java.util.stream.Stream;
+import com.bedwarsrandomizer.game.GameSettings;
 
 /** The void arena dimension ({@code bedwarsrandomizer:arena}) and its map, pasted from a WorldEdit schematic. */
 public final class Arena {
@@ -52,9 +56,61 @@ public final class Arena {
             ResourceKey.create(Registries.DIMENSION, ResourceLocation.fromNamespaceAndPath(BedwarsRandomizer.MOD_ID, "arena"));
     /** Where the map was copied from: pasting here works like standing at 0 100 0 and running //paste. */
     public static final BlockPos PASTE_ORIGIN = new BlockPos(0, 100, 0);
-    private static final ResourceLocation BUNDLED_MAP = ResourceLocation.fromNamespaceAndPath(BedwarsRandomizer.MOD_ID, "arena/map.schem");
-    /** Drop a schematic here to use another map without rebuilding the mod (only before the arena is first pasted). */
-    private static final Path CUSTOM_MAP = FMLPaths.CONFIGDIR.get().resolve(BedwarsRandomizer.MOD_ID).resolve("arena.schem");
+    /** The default map. */
+    public static final String BUNDLED_MAP_NAME = "bw1";
+    /**
+     * Maps inside the mod: {@code data/bedwarsrandomizer/arena/maps/<name>.schem}, WorldEdit schematics copied while
+     * standing at 0 100 0.
+     */
+    private static final String BUNDLED_MAPS_PATH = "arena/maps";
+    /** Extra maps without rebuilding the mod: {@code config/bedwarsrandomizer/maps/<name>.schem}. */
+    private static final Path MAPS_DIR = FMLPaths.CONFIGDIR.get().resolve(BedwarsRandomizer.MOD_ID).resolve("maps");
+    private static final String SCHEMATIC = ".schem";
+
+    /** Every map that can be chosen: bw1 first, then the other maps in the mod, then the config folder's. */
+    public static List<String> availableMaps(MinecraftServer server) {
+        Map<String, Resource> bundled = bundledMaps(server);
+        List<String> maps = new ArrayList<>();
+        if (bundled.containsKey(BUNDLED_MAP_NAME)) maps.add(BUNDLED_MAP_NAME);
+        bundled.keySet().stream().filter(name -> !name.equals(BUNDLED_MAP_NAME)).forEach(maps::add);
+        if (Files.isDirectory(MAPS_DIR)) {
+            try (Stream<Path> files = Files.list(MAPS_DIR)) {
+                files.map(file -> file.getFileName().toString())
+                        .filter(name -> name.endsWith(SCHEMATIC))
+                        .map(name -> name.substring(0, name.length() - SCHEMATIC.length()))
+                        .filter(name -> !maps.contains(name))
+                        .sorted()
+                        .forEach(maps::add);
+            } catch (IOException e) {
+                BedwarsRandomizer.LOGGER.error("Could not list {}", MAPS_DIR, e);
+            }
+        }
+        return maps;
+    }
+
+    private static Map<String, Resource> bundledMaps(MinecraftServer server) {
+        Map<String, Resource> maps = new TreeMap<>();
+        server.getResourceManager()
+                .listResources(BUNDLED_MAPS_PATH, id -> id.getNamespace().equals(BedwarsRandomizer.MOD_ID) && id.getPath().endsWith(SCHEMATIC))
+                .forEach((id, resource) -> {
+                    String file = id.getPath().substring(id.getPath().lastIndexOf('/') + 1);
+                    maps.put(file.substring(0, file.length() - SCHEMATIC.length()), resource);
+                });
+        return maps;
+    }
+
+    /** Makes {@code name} the arena map (pasting it now if it isn't the one there). Returns false for unknown maps. */
+    public static boolean selectMap(MinecraftServer server, String name) {
+        if (!availableMaps(server).contains(name)) return false;
+        GameSettings settings = GameSettings.get();
+        if (!name.equals(settings.map)) {
+            settings.map = name;
+            settings.save();
+            cachedBounds = null;
+        }
+        ensurePasted(server);
+        return true;
+    }
 
     @Nullable
     public static ServerLevel level(MinecraftServer server) {
@@ -76,7 +132,7 @@ public final class Arena {
         try {
             byte[] bytes = readMapBytes(server);
             if (bytes == null) {
-                if (!data.isPasted()) BedwarsRandomizer.LOGGER.error("No arena map found ({} or {})", CUSTOM_MAP, BUNDLED_MAP);
+                if (!data.isPasted()) BedwarsRandomizer.LOGGER.error("No arena map found (data/{}/{})", BedwarsRandomizer.MOD_ID, BUNDLED_MAPS_PATH);
                 return;
             }
             String hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-1").digest(bytes));
@@ -86,13 +142,14 @@ public final class Arena {
             long start = System.currentTimeMillis();
             BoundingBox bounds = SchematicPaster.bounds(schematic, PASTE_ORIGIN);
             if (data.isPasted()) {
-                // the map file was updated: clear the old map (around the new one's area) before pasting the new one
+                // another map was chosen or the map file was updated: clear the old map before pasting
                 BedwarsRandomizer.LOGGER.info("The arena map changed, replacing it");
-                clearArea(level, bounds.inflatedBy(16));
+                BoundingBox old = data.mapBounds();
+                clearArea(level, old != null ? old : bounds.inflatedBy(16));
                 data.clearPlayerPlaced();
             }
             int blocks = SchematicPaster.paste(level, PASTE_ORIGIN, schematic);
-            data.setPasted(hash);
+            data.setPasted(hash, bounds);
             cachedBounds = bounds;
             BedwarsRandomizer.LOGGER.info("Pasted the arena map ({} blocks) in {} ms", blocks, System.currentTimeMillis() - start);
         } catch (IOException | NoSuchAlgorithmException | RuntimeException e) {
@@ -125,10 +182,17 @@ public final class Arena {
 
     @Nullable
     private static byte[] readMapBytes(MinecraftServer server) throws IOException {
-        if (Files.isRegularFile(CUSTOM_MAP)) return Files.readAllBytes(CUSTOM_MAP);
-        Optional<Resource> resource = server.getResourceManager().getResource(BUNDLED_MAP);
-        if (resource.isEmpty()) return null;
-        try (InputStream in = resource.get().open()) {
+        String name = GameSettings.get().map;
+        Map<String, Resource> bundled = bundledMaps(server);
+        Resource resource = bundled.get(name);
+        if (resource == null) {
+            Path file = MAPS_DIR.resolve(name + SCHEMATIC);
+            if (availableMaps(server).contains(name) && Files.isRegularFile(file)) return Files.readAllBytes(file);
+            BedwarsRandomizer.LOGGER.warn("Map {} not found, using {}", name, BUNDLED_MAP_NAME);
+            resource = bundled.get(BUNDLED_MAP_NAME);
+            if (resource == null) return null;
+        }
+        try (InputStream in = resource.open()) {
             return in.readAllBytes();
         }
     }
@@ -144,7 +208,7 @@ public final class Arena {
         player.teleportTo(arena, PASTE_ORIGIN.getX() + 0.5, PASTE_ORIGIN.getY(), PASTE_ORIGIN.getZ() + 0.5, player.getYRot(), player.getXRot());
     }
 
-    /** [Go to lobby]: into the arena in survival, with clear weather. */
+    /** Into the arena lobby in survival, with clear weather. */
     public static boolean teleportToLobby(ServerPlayer player) {
         MinecraftServer server = player.getServer();
         ServerLevel arena = level(server);

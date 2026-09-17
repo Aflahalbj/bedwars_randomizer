@@ -16,6 +16,7 @@ import net.minecraft.client.gui.screens.ConfirmScreen;
 import net.minecraft.client.server.IntegratedServer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.CommonComponents;
+import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.contents.TranslatableContents;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -32,6 +33,7 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
 import java.util.Comparator;
+import java.util.List;
 import java.util.UUID;
 import java.util.function.Consumer;
 
@@ -77,14 +79,20 @@ public final class GameTestHarness {
             case 415 -> shot(mc, "game_02_win.png");
             case 440 -> onServer(mc, player -> BedwarsRandomizer.LOGGER.info("[gameTest] replays stored this round: {}", ReplayStorage.all().size()));
             case 630 -> onServer(mc, GameTestHarness::checkLobby);
-            case 640 -> onServer(mc, player -> run(player, "bwr nextround"));
-            case 650 -> onServer(mc, GameTestHarness::checkNextRound);
-            case 660 -> onServer(mc, player -> run(player, "bwr endround"));
-            case 670 -> onServer(mc, GameTestHarness::checkEndRound);
-            case 675 -> shot(mc, "game_03_endround.png");
-            case 690 -> onServer(mc, player -> run(player, "bwr setting"));
-            case 730 -> shot(mc, "game_04_settings.png");
-            case 740 -> mc.stop();
+            case 632 -> onServer(mc, GameTestHarness::checkOfflineBlocksStart);
+            case 634 -> onServer(mc, player -> run(player, "player Bob spawn at 3.5 120 63.5"));
+            case 660 -> onServer(mc, player -> run(player, "bwr nextround"));
+            case 665 -> onServer(mc, GameTestHarness::checkNoPvpBeforeStart);
+            case 670 -> onServer(mc, GameTestHarness::checkNextRound);
+            case 680 -> onServer(mc, player -> run(player, "bwr endround"));
+            case 690 -> onServer(mc, GameTestHarness::checkEndRound);
+            case 695 -> shot(mc, "game_03_endround.png");
+            case 700 -> onServer(mc, player -> run(player, "bwr lobbyall"));
+            case 740 -> shot(mc, "game_04_maps.png");
+            case 745 -> onServer(mc, GameTestHarness::checkTeleportAll);
+            case 750 -> onServer(mc, player -> run(player, "bwr setting"));
+            case 790 -> shot(mc, "game_05_settings.png");
+            case 800 -> mc.stop();
             default -> {}
         }
     }
@@ -95,6 +103,12 @@ public final class GameTestHarness {
         settings.setNumbers(3, 3, 9, 1);
         settings.setRefillSeconds(RandomizerSource.GLAZED_TERRACOTTA, 4);
         settings.save();
+        // alone, there is only one team: no start
+        settings.register(player);
+        Component oneTeam = BedwarsGame.get().start(player.getServer(), player);
+        BedwarsRandomizer.LOGGER.info("[gameTest] one-team start blocked {} ({})",
+                oneTeam != null && BedwarsGame.get().phase() == BedwarsGame.Phase.LOBBY ? "PASS" : "FAIL",
+                oneTeam == null ? "it started" : oneTeam.getString());
         run(player, "bwr regisall");
         run(player, "bwr host add Carl");
         run(player, "bwr start");
@@ -166,9 +180,28 @@ public final class GameTestHarness {
         DyeColor bobTeam = game.teamOf(bobId);
         boolean otherBedBroken = player.gameMode.destroyBlock(game.bedOf(bobTeam)) && !game.bedAlive(bobTeam);
 
+        // workstations stay closed during the round, storage opens
+        BlockPos table = new BlockPos(0, 140, 0);
+        BlockPos chest = new BlockPos(2, 140, 0);
+        arena.setBlock(table, net.minecraft.world.level.block.Blocks.CRAFTING_TABLE.defaultBlockState(), 3);
+        arena.setBlock(chest, net.minecraft.world.level.block.Blocks.CHEST.defaultBlockState(), 3);
+        player.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND, net.minecraft.world.item.ItemStack.EMPTY);
+        use(player, table);
+        boolean tableClosed = player.containerMenu == player.inventoryMenu;
+        use(player, chest);
+        boolean chestOpened = player.containerMenu instanceof net.minecraft.world.inventory.ChestMenu;
+        player.closeContainer();
+        BedwarsRandomizer.LOGGER.info("[gameTest] workstations {} (crafting table stayed closed={} chest opened={})",
+                tableClosed && chestOpened ? "PASS" : "FAIL", tableClosed, chestOpened);
+
         boolean pass = ownBedKept && glazedBroken && otherBedBroken;
         BedwarsRandomizer.LOGGER.info("[gameTest] beds {} (my team={} own bed kept={} Bob's {} bed broken={} glazed broken={})",
                 pass ? "PASS" : "FAIL", team.getName(), ownBedKept, bobTeam.getName(), otherBedBroken, glazedBroken);
+    }
+
+    private static void use(ServerPlayer player, BlockPos pos) {
+        player.gameMode.useItemOn(player, player.serverLevel(), player.getMainHandItem(), net.minecraft.world.InteractionHand.MAIN_HAND,
+                new net.minecraft.world.phys.BlockHitResult(Vec3.atCenterOf(pos), net.minecraft.core.Direction.UP, pos, false));
     }
 
     private static void checkRefill(ServerPlayer player) {
@@ -223,6 +256,41 @@ public final class GameTestHarness {
                 && Arena.isArena(player.level()) && player.position().distanceTo(new Vec3(0.5, 100, 0.5)) < 2;
         BedwarsRandomizer.LOGGER.info("[gameTest] back to lobby {} (phase={} gamemode={} at={})", pass ? "PASS" : "FAIL", game.phase(),
                 player.gameMode.getGameModeForPlayer(), player.blockPosition().toShortString());
+    }
+
+    /** Bob is still registered but left when he died: no new round until he's back. */
+    private static void checkOfflineBlocksStart(ServerPlayer player) {
+        Component error = BedwarsGame.get().nextRound(player.getServer(), player);
+        boolean pass = error != null && error.getString().contains("offline") && BedwarsGame.get().phase() == BedwarsGame.Phase.LOBBY;
+        BedwarsRandomizer.LOGGER.info("[gameTest] offline player blocks start {} ({})", pass ? "PASS" : "FAIL", error == null ? "it started" : error.getString());
+    }
+
+    private static void checkNoPvpBeforeStart(ServerPlayer player) {
+        ServerPlayer bob = player.getServer().getPlayerList().getPlayer(bobId);
+        float before = bob == null ? 0 : bob.getHealth();
+        boolean blocked = bob != null && !bob.hurt(player.damageSources().playerAttack(player), 4) && bob.getHealth() == before;
+        boolean pass = BedwarsGame.get().phase() == BedwarsGame.Phase.COUNTDOWN && blocked;
+        BedwarsRandomizer.LOGGER.info("[gameTest] no pvp before the round {} (phase={} hit blocked={})", pass ? "PASS" : "FAIL",
+                BedwarsGame.get().phase(), blocked);
+    }
+
+    private static void checkTeleportAll(ServerPlayer player) {
+        MinecraftServer server = player.getServer();
+        // every map in the mod pastes with all 8 team beds; switching clears the previous one
+        List<String> maps = Arena.availableMaps(server);
+        StringBuilder bedsPerMap = new StringBuilder();
+        boolean mapsOk = maps.size() >= 3;
+        for (String map : maps) {
+            boolean selected = Arena.selectMap(server, map);
+            int beds = Arena.findTeamBeds(server).size();
+            bedsPerMap.append(' ').append(map).append('=').append(beds);
+            if (!selected || beds != 8) mapsOk = false;
+        }
+        boolean known = Arena.selectMap(server, Arena.BUNDLED_MAP_NAME);
+        int count = BedwarsGame.teleportAllToLobby(server);
+        boolean pass = mapsOk && known && count >= 2 && player.position().distanceTo(new Vec3(0.5, 100, 0.5)) < 2;
+        BedwarsRandomizer.LOGGER.info("[gameTest] maps + teleport all to lobby {} (beds per map:{} teleported={})", pass ? "PASS" : "FAIL",
+                bedsPerMap, count);
     }
 
     private static void checkNextRound(ServerPlayer player) {

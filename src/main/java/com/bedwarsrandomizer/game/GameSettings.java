@@ -21,8 +21,8 @@ import java.util.*;
 
 /**
  * Bed Wars game settings and the registered players (their UUID, name, skin, chosen team or auto, and whether they
- * host), edited with {@code /bwr regis}, {@code /bwr host} and {@code /bwr setting}. Saved to
- * {@code config/bedwarsrandomizer/game.json}.
+ * host), edited with {@code /bwr regis}, {@code /bwr host} and {@code /bwr setting}. Timers, team size and the map are
+ * saved to {@code config/bedwarsrandomizer/game.json}; registrations only last until the server stops.
  */
 public final class GameSettings {
     private static final Path FILE = FMLPaths.CONFIGDIR.get().resolve(BedwarsRandomizer.MOD_ID).resolve("game.json");
@@ -41,6 +41,8 @@ public final class GameSettings {
     public int respawnSeconds = 5;
     public int spawnDistance = 9;
     public int playersPerTeam = 1;
+    /** The arena map (see Arena#availableMaps). */
+    public String map = "bw1";
     private final EnumMap<RandomizerSource, Integer> refillSeconds = new EnumMap<>(RandomizerSource.class);
     private final LinkedHashMap<UUID, Registered> players = new LinkedHashMap<>();
 
@@ -164,18 +166,7 @@ public final class GameSettings {
             for (RandomizerSource source : RandomizerSource.values()) {
                 settings.setRefillSeconds(source, GsonHelper.getAsInt(refill, source.key(), DEFAULT_REFILL_SECONDS));
             }
-            for (JsonElement element : GsonHelper.getAsJsonArray(root, "players", new JsonArray())) {
-                JsonObject player = element.getAsJsonObject();
-                UUID id = UUID.fromString(GsonHelper.getAsString(player, "uuid"));
-                String team = GsonHelper.getAsString(player, "team", "");
-                Skin skin = null;
-                if (player.has("skin")) {
-                    JsonObject skinJson = GsonHelper.getAsJsonObject(player, "skin");
-                    skin = new Skin(GsonHelper.getAsString(skinJson, "value"), GsonHelper.getAsString(skinJson, "signature", null));
-                }
-                settings.players.put(id, new Registered(id, GsonHelper.getAsString(player, "name", "?"), DyeColor.byName(team, null),
-                        GsonHelper.getAsBoolean(player, "host", false), skin));
-            }
+            settings.map = GsonHelper.getAsString(root, "map", "bw1");
         } catch (IOException | RuntimeException e) {
             BedwarsRandomizer.LOGGER.error("Could not read {}, using default game settings", FILE, e);
         }
@@ -191,22 +182,7 @@ public final class GameSettings {
         JsonObject refill = new JsonObject();
         refillSeconds.forEach((source, seconds) -> refill.addProperty(source.key(), seconds));
         root.add("refillSeconds", refill);
-        JsonArray list = new JsonArray();
-        for (Registered player : players.values()) {
-            JsonObject json = new JsonObject();
-            json.addProperty("uuid", player.id().toString());
-            json.addProperty("name", player.name());
-            if (player.team() != null) json.addProperty("team", player.team().getName());
-            if (player.host()) json.addProperty("host", true);
-            if (player.skin() != null) {
-                JsonObject skin = new JsonObject();
-                skin.addProperty("value", player.skin().value());
-                if (player.skin().signature() != null) skin.addProperty("signature", player.skin().signature());
-                json.add("skin", skin);
-            }
-            list.add(json);
-        }
-        root.add("players", list);
+        root.addProperty("map", map);
         try {
             Files.createDirectories(FILE.getParent());
             Files.writeString(FILE, GSON.toJson(root));

@@ -48,6 +48,7 @@ public record GameSettingsSavePacket(int startCountdown, int respawnSeconds, int
 
         List<GameSettings.Registered> registered = new ArrayList<>();
         List<String> notFound = new ArrayList<>();
+        boolean newPlayers = false;
         for (PlayerRow row : players) {
             if (row.id() != null) {
                 GameSettings.Registered old = settings.player(row.id());
@@ -62,11 +63,15 @@ public record GameSettingsSavePacket(int startCountdown, int respawnSeconds, int
             if (registered.stream().noneMatch(r -> r.id().equals(player.getUUID()))) {
                 registered.add(new GameSettings.Registered(player.getUUID(), player.getGameProfile().getName(), row.team(), row.host(),
                         GameSettings.skinOf(player.getGameProfile())));
-                if (settings.player(player.getUUID()) == null) BedwarsGame.sendLobbyInvite(player);
+                if (settings.player(player.getUUID()) == null) {
+                    BedwarsGame.notifyRegistered(player);
+                    newPlayers = true;
+                }
             }
         }
         settings.setPlayers(registered);
         settings.save();
+        if (newPlayers) BedwarsGame.sendLobbyLink(sender.getServer(), sender);
 
         sender.sendSystemMessage(Component.literal("[BWR] Game settings saved (" + registered.size() + " registered player(s)).")
                 .withStyle(ChatFormatting.GREEN));

@@ -154,22 +154,35 @@ public final class BedwarsGame {
         GameSettings settings = GameSettings.get();
         List<ServerPlayer> online = new ArrayList<>();
         List<ServerPlayer> onlineHosts = new ArrayList<>();
+        List<String> offline = new ArrayList<>();
         for (GameSettings.Registered registered : settings.players()) {
             ServerPlayer player = server.getPlayerList().getPlayer(registered.id());
-            if (player == null) continue;
+            if (player == null) {
+                offline.add(registered.name());
+                continue;
+            }
             (registered.host() ? onlineHosts : online).add(player);
         }
+        if (!offline.isEmpty()) {
+            return Component.literal("Can't start: registered player(s) offline: " + String.join(", ", offline)
+                    + ". Wait for them or use /bwr unregis <name>.");
+        }
         if (online.isEmpty()) {
-            return Component.literal("No registered player is online (hosts don't play). Use /bwr regis <player> or /bwr regisall.");
+            return Component.literal("No registered player (hosts don't play). Use /bwr regis <player> or /bwr regisall.");
+        }
+
+        Random random = ThreadLocalRandom.current();
+        Collections.shuffle(online, random);
+        List<DyeColor> islands = randomIslandOrder(random);
+        Map<UUID, DyeColor> assignment = assignTeams(settings, online, islands);
+        if (new HashSet<>(assignment.values()).size() < 2) {
+            return Component.literal("Can't start: a round needs at least 2 teams. Register more players, lower the team size"
+                    + " or give players different teams in /bwr setting.");
         }
 
         Arena.ensurePasted(server);
         Arena.resetMap(server);
         Map<DyeColor, BlockPos> beds = Arena.findTeamBeds(server);
-        Random random = ThreadLocalRandom.current();
-        Collections.shuffle(online, random);
-        List<DyeColor> islands = randomIslandOrder(random);
-        Map<UUID, DyeColor> assignment = assignTeams(settings, online, islands);
         for (DyeColor color : new LinkedHashSet<>(assignment.values())) {
             if (!beds.containsKey(color)) return Component.literal("The arena has no " + color.getName() + " team bed.");
         }
@@ -254,7 +267,29 @@ public final class BedwarsGame {
         return true;
     }
 
-    /** Forgets the round without touching players (server shutting down). */
+    /** The server is stopping (like quitting a singleplayer world): end any round and forget registrations, rounds and replays. */
+    public void shutdown(MinecraftServer server) {
+        if (phase != Phase.LOBBY) finish(server);
+        reset();
+        GameSettings.get().unregisterAll();
+        ReplayRecorder.get().reset();
+        ReplayStorage.clear();
+    }
+
+    /** [Teleport all to lobby], after the map is chosen: every online registered player and host. Returns how many. */
+    public static int teleportAllToLobby(MinecraftServer server) {
+        int count = 0;
+        for (GameSettings.Registered registered : GameSettings.get().players()) {
+            ServerPlayer player = server.getPlayerList().getPlayer(registered.id());
+            if (player != null && Arena.teleportToLobby(player)) {
+                player.playNotifySound(SoundEvents.ENDERMAN_TELEPORT, SoundSource.PLAYERS, 1.0F, 1.0F);
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /** Forgets the round without touching players. */
     public void reset() {
         clear();
         roundStats.clear();
@@ -311,7 +346,7 @@ public final class BedwarsGame {
                     forEachOnline(server, player -> {
                         title(player, Component.literal(String.valueOf(seconds)).withStyle(seconds <= 3 ? ChatFormatting.RED : ChatFormatting.YELLOW),
                                 Component.literal("Get ready!"), 0, 25, 0);
-                        player.playNotifySound(SoundEvents.EXPERIENCE_ORB_PICKUP, SoundSource.PLAYERS, 1.0F, 1.0F);
+                        player.playNotifySound(SoundEvents.EXPERIENCE_ORB_PICKUP, SoundSource.PLAYERS, 1.0F, seconds <= 3 ? 1.4F : 1.0F);
                     });
                 }
                 if (--countdownTicks < 0) beginRunning(server, arena);
@@ -335,6 +370,7 @@ public final class BedwarsGame {
             }
             spawnAtBase(player, arena, teams.get(state.team));
             title(player, Component.literal("GO!").withStyle(ChatFormatting.GREEN), Component.literal("Protect your bed, destroy the others!"), 0, 30, 10);
+            player.playNotifySound(SoundEvents.ENDER_DRAGON_GROWL, SoundSource.MASTER, 0.5F, 1.0F);
         }
         GameSettings settings = GameSettings.get();
         for (RandomizerSource source : RandomizerSource.values()) refillTicks.put(source, settings.refillSeconds(source) * 20);
@@ -358,11 +394,13 @@ public final class BedwarsGame {
                 if (state.respawnTicks > 0 && state.respawnTicks % 20 == 0) {
                     title(player, Component.literal("YOU DIED!").withStyle(ChatFormatting.RED),
                             Component.literal("Respawning in " + state.respawnTicks / 20 + "s").withStyle(ChatFormatting.YELLOW), 0, 25, 0);
+                    player.playNotifySound(SoundEvents.NOTE_BLOCK_HAT.value(), SoundSource.PLAYERS, 1.0F, 1.0F);
                 }
                 if (--state.respawnTicks <= 0) {
                     state.status = Status.ALIVE;
                     spawnAtBase(player, arena, teams.get(state.team));
                     title(player, Component.literal("RESPAWNED!").withStyle(ChatFormatting.GREEN), Component.empty(), 0, 20, 10);
+                    player.playNotifySound(SoundEvents.ENDERMAN_TELEPORT, SoundSource.PLAYERS, 1.0F, 1.0F);
                 }
             }
         }
@@ -376,7 +414,9 @@ public final class BedwarsGame {
         for (RandomizerSource source : RandomizerSource.values()) {
             int left = refillTicks.getOrDefault(source, 0) - 1;
             if (left <= 0) {
-                for (RefillArea area : refillAreas) area.refill(arena, source);
+                for (RefillArea area : refillAreas) {
+                    if (area.refill(arena, source) > 0) area.playRefillSound(arena);
+                }
                 left = settings.refillSeconds(source) * 20;
             }
             refillTicks.put(source, left);
@@ -390,7 +430,11 @@ public final class BedwarsGame {
         ServerLevel arena = Arena.level(server);
         if (arena == null) return 0;
         int placed = 0;
-        for (RefillArea area : refillAreas) placed += area.refill(arena, source);
+        for (RefillArea area : refillAreas) {
+            int areaPlaced = area.refill(arena, source);
+            if (areaPlaced > 0) area.playRefillSound(arena);
+            placed += areaPlaced;
+        }
         refillTicks.put(source, GameSettings.get().refillSeconds(source) * 20);
         updateDisplays(arena);
         return placed;
@@ -429,7 +473,10 @@ public final class BedwarsGame {
                 stats.kills++;
                 if (finalKill) stats.finalKills++;
             });
+            killer.playNotifySound(SoundEvents.ARROW_HIT_PLAYER, SoundSource.PLAYERS, 1.0F, 1.0F);
+            if (finalKill) killer.playNotifySound(SoundEvents.PLAYER_LEVELUP, SoundSource.PLAYERS, 0.7F, 1.2F);
         }
+        if (finalKill) victim.playNotifySound(SoundEvents.WITHER_SPAWN, SoundSource.HOSTILE, 0.4F, 1.0F);
 
         if (!finalKill) {
             state.status = Status.RESPAWNING;
@@ -467,7 +514,11 @@ public final class BedwarsGame {
     }
 
     public void onLogin(ServerPlayer player) {
-        if (phase == Phase.LOBBY) return;
+        if (phase == Phase.LOBBY) {
+            // still a spectator from a round that was cut off (crash / quit): back to normal in the lobby
+            if (player.isSpectator() && Arena.isArena(player.level())) Arena.teleportToLobby(player);
+            return;
+        }
         if (hosts.contains(player.getUUID())) {
             toWaitingSpot(player);
             return;
@@ -501,6 +552,7 @@ public final class BedwarsGame {
         PlayerState breakerState = players.get(breaker.getUUID());
         if (breakerState != null && breakerState.team == team.color) {
             breaker.displayClientMessage(Component.literal("You can't break your own bed!").withStyle(ChatFormatting.RED), true);
+            breaker.playNotifySound(SoundEvents.VILLAGER_NO, SoundSource.PLAYERS, 1.0F, 1.0F);
             return true;
         }
         bedDestroyed(breaker.getServer(), team, breaker);
@@ -516,11 +568,13 @@ public final class BedwarsGame {
                 .append(teamName(team.color)).append(Component.literal(" Bed was destroyed").withStyle(ChatFormatting.GRAY));
         if (breaker != null) message.append(Component.literal(" by " + breaker.getGameProfile().getName()).withStyle(ChatFormatting.GRAY));
         broadcast(server, message.append(Component.literal("!").withStyle(ChatFormatting.GRAY)));
-        for (UUID id : team.members) {
-            ServerPlayer member = server.getPlayerList().getPlayer(id);
-            if (member == null) continue;
-            title(member, Component.literal("BED DESTROYED!").withStyle(ChatFormatting.RED), Component.literal("You will no longer respawn!"), 5, 50, 10);
-            member.playNotifySound(SoundEvents.WITHER_DEATH, SoundSource.HOSTILE, 0.6F, 1.0F);
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            if (team.members.contains(player.getUUID())) {
+                title(player, Component.literal("BED DESTROYED!").withStyle(ChatFormatting.RED), Component.literal("You will no longer respawn!"), 5, 50, 10);
+                player.playNotifySound(SoundEvents.WITHER_DEATH, SoundSource.HOSTILE, 0.6F, 1.0F);
+            } else if (players.containsKey(player.getUUID()) || hosts.contains(player.getUUID())) {
+                player.playNotifySound(SoundEvents.ENDER_DRAGON_GROWL, SoundSource.HOSTILE, 0.4F, 1.2F);
+            }
         }
     }
 
@@ -547,7 +601,11 @@ public final class BedwarsGame {
             if (player == null) continue;
             boolean won = state.team == lastWinner;
             title(player, title, Component.literal(won ? "VICTORY!" : "GAME OVER").withStyle(won ? ChatFormatting.GOLD : ChatFormatting.GRAY), 10, 80, 20);
-            player.playNotifySound(won ? SoundEvents.UI_TOAST_CHALLENGE_COMPLETE : SoundEvents.PLAYER_LEVELUP, SoundSource.MASTER, 1.0F, 1.0F);
+            if (won) {
+                player.playNotifySound(SoundEvents.UI_TOAST_CHALLENGE_COMPLETE, SoundSource.MASTER, 1.0F, 1.0F);
+            } else {
+                player.playNotifySound(SoundEvents.NOTE_BLOCK_BASS.value(), SoundSource.MASTER, 1.0F, 0.5F);
+            }
         }
         for (UUID id : hosts) {
             ServerPlayer host = server.getPlayerList().getPlayer(id);
@@ -582,6 +640,7 @@ public final class BedwarsGame {
         for (ServerPlayer target : targets) {
             target.sendSystemMessage(Component.literal("Round " + roundsPlayed + " is over! ").withStyle(ChatFormatting.YELLOW)
                     .append(next).append(Component.literal("  ")).append(end));
+            target.playNotifySound(SoundEvents.NOTE_BLOCK_PLING.value(), SoundSource.MASTER, 1.0F, 1.0F);
         }
     }
 
@@ -748,12 +807,27 @@ public final class BedwarsGame {
         server.getPlayerList().broadcastSystemMessage(message, false);
     }
 
-    /** The chat line with a clickable [Go to lobby], sent when a player is registered. */
-    public static void sendLobbyInvite(ServerPlayer player) {
-        MutableComponent link = Component.literal("[Go to lobby]").withStyle(style -> style.withColor(ChatFormatting.GREEN).withBold(true)
-                .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/bwr lobby"))
-                .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, Component.literal("Teleport to the Bed Wars arena"))));
-        player.sendSystemMessage(Component.literal("You are registered for Bed Wars! ").withStyle(ChatFormatting.YELLOW).append(link));
+    /** Tells a player they were registered. */
+    public static void notifyRegistered(ServerPlayer player) {
+        player.sendSystemMessage(Component.literal("You are registered for Bed Wars!").withStyle(ChatFormatting.YELLOW));
+        player.playNotifySound(SoundEvents.EXPERIENCE_ORB_PICKUP, SoundSource.PLAYERS, 1.0F, 1.2F);
+    }
+
+    /** [Teleport all to lobby] (choose a map first) for the hosts and whoever registered the players. */
+    public static void sendLobbyLink(MinecraftServer server, @Nullable ServerPlayer registeredBy) {
+        Set<ServerPlayer> targets = new LinkedHashSet<>();
+        for (GameSettings.Registered registered : GameSettings.get().players()) {
+            ServerPlayer host = registered.host() ? server.getPlayerList().getPlayer(registered.id()) : null;
+            if (host != null) targets.add(host);
+        }
+        if (registeredBy != null) targets.add(registeredBy);
+        MutableComponent link = Component.literal("[Teleport all to lobby]").withStyle(style -> style.withColor(ChatFormatting.GREEN).withBold(true)
+                .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/bwr lobbyall"))
+                .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, Component.literal("Choose a map and bring every registered player to the lobby"))));
+        int count = GameSettings.get().players().size();
+        for (ServerPlayer target : targets) {
+            target.sendSystemMessage(Component.literal(count + " player(s) registered. ").withStyle(ChatFormatting.YELLOW).append(link));
+        }
     }
 
     // ------------------------------------------------------------------------------------------

@@ -83,6 +83,20 @@ public final class ModNetwork {
                 .decoder(RefillNowPacket::decode)
                 .consumerMainThread(RefillNowPacket::handle)
                 .add();
+        CHANNEL.messageBuilder(MapSelectPacket.class, id++, NetworkDirection.PLAY_TO_CLIENT)
+                .encoder(MapSelectPacket::encode)
+                .decoder(MapSelectPacket::decode)
+                .consumerMainThread(MapSelectPacket::handle)
+                .add();
+        CHANNEL.messageBuilder(SelectMapPacket.class, id++, NetworkDirection.PLAY_TO_SERVER)
+                .encoder(SelectMapPacket::encode)
+                .decoder(SelectMapPacket::decode)
+                .consumerMainThread(SelectMapPacket::handle)
+                .add();
+    }
+
+    public static void sendMapSelect(ServerPlayer player, MapSelectPacket packet) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
     }
 
     public static void sendGameSettingsScreen(ServerPlayer player, GameSettingsScreenPacket packet) {

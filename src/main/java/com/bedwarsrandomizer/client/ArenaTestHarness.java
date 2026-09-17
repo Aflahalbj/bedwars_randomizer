@@ -27,6 +27,11 @@ import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.item.PrimedTnt;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.projectile.FireworkRocketEntity;
+import net.minecraft.world.entity.projectile.Snowball;
 import net.minecraft.world.inventory.ClickType;
 import net.minecraft.world.item.*;
 import net.minecraft.world.item.enchantment.EnchantmentHelper;
@@ -60,6 +65,9 @@ public final class ArenaTestHarness {
     private static final BlockPos ARENA_MAX = new BlockPos(93, 115, 92);
     private static final BlockPos FIREBALL_TARGET = new BlockPos(0, 130, 40);
     private static final BlockPos TNT_SUPPORT = new BlockPos(20, 130, 40);
+    /** The stone platform the fireball damage test builds. */
+    private static final BlockPos PLATFORM = new BlockPos(-20, 130, 40);
+    private static Vec3 snowballStart = Vec3.ZERO;
 
     private static int ticks;
     private static BlockPos firstGlazed;
@@ -87,7 +95,13 @@ public final class ArenaTestHarness {
                 checkEnchantBook(player);
                 placeTnt(player);
             });
+            case 200 -> onServer(mc, ArenaTestHarness::throwSnowball);
             case 205 -> onServer(mc, ArenaTestHarness::checkTntPrimed);
+            case 212 -> onServer(mc, ArenaTestHarness::checkSnowball);
+            case 215 -> onServer(mc, ArenaTestHarness::launchFirework);
+            case 245 -> onServer(mc, ArenaTestHarness::checkFirework);
+            case 250 -> onServer(mc, ArenaTestHarness::standNearTnt);
+            case 262 -> onServer(mc, ArenaTestHarness::checkTntDamageAndGlass);
             case 285 -> onServer(mc, ArenaTestHarness::checkTntExploded);
             case 290 -> onServer(mc, player -> {
                 player.setGameMode(GameType.CREATIVE);
@@ -149,7 +163,9 @@ public final class ArenaTestHarness {
         expect(problems, byId, RandomizerSource.GLAZED_TERRACOTTA, false, "ender_pearl", "totem_of_undying", "flint_and_steel", "obsidian", "tnt",
                 "red_wool", "diamond_sword", "oak_slab", "stick", "glass_pane", "elytra");
         expect(problems, byId, RandomizerSource.NOTE_BLOCK, true, "totem_of_undying", "ender_pearl", "obsidian", "tnt", "diamond_sword",
-                "diamond_chestplate", "splash_potion#minecraft:strong_healing", "enchanted_book#minecraft:sharpness/5", "golden_apple");
+                "diamond_chestplate", "splash_potion#minecraft:strong_healing", "enchanted_book#minecraft:sharpness/5", "golden_apple",
+                "milk_bucket");
+        expect(problems, byId, RandomizerSource.GLAZED_TERRACOTTA, false, "milk_bucket");
         expect(problems, byId, RandomizerSource.NOTE_BLOCK, false, "netherite_sword", "flint_and_steel", "elytra");
         expect(problems, byId, RandomizerSource.WARPED_HYPHAE, true, "bread", "golden_apple", "splash_potion#minecraft:healing",
                 "enchanted_book#minecraft:sharpness/1");
@@ -419,11 +435,93 @@ public final class ArenaTestHarness {
 
     private static void placeTnt(ServerPlayer player) {
         ServerLevel arena = player.serverLevel();
-        place(arena, ArenaData.get(arena), TNT_SUPPORT, Blocks.STONE, true);
+        ArenaData data = ArenaData.get(arena);
+        place(arena, data, TNT_SUPPORT, Blocks.STONE, true);
+        // player-placed glass wall 2 blocks away with wool behind it, wool right next to the TNT, a block to stand on
+        for (int x = -2; x <= 2; x++) {
+            for (int y = 1; y <= 3; y++) place(arena, data, TNT_SUPPORT.offset(x, y, 2), Blocks.GLASS, true);
+        }
+        place(arena, data, TNT_SUPPORT.offset(0, 1, 3), Blocks.WHITE_WOOL, true);
+        place(arena, data, TNT_SUPPORT.offset(1, 1, 0), Blocks.RED_WOOL, true);
+        place(arena, data, TNT_SUPPORT.offset(-4, 0, 0), Blocks.STONE, true);
         player.setGameMode(GameType.SURVIVAL);
         player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.TNT));
         player.gameMode.useItemOn(player, arena, player.getMainHandItem(), InteractionHand.MAIN_HAND,
                 new BlockHitResult(Vec3.atCenterOf(TNT_SUPPORT).relative(Direction.UP, 0.5), Direction.UP, TNT_SUPPORT, false));
+    }
+
+    /** On the fireball platform: a snowball flies into the player. */
+    private static void throwSnowball(ServerPlayer player) {
+        ServerLevel arena = player.serverLevel();
+        player.setGameMode(GameType.SURVIVAL);
+        player.teleportTo(arena, PLATFORM.getX() + 0.5, PLATFORM.getY() + 1, PLATFORM.getZ() + 0.5, 0, 0);
+        player.setDeltaMovement(Vec3.ZERO);
+        player.setHealth(player.getMaxHealth());
+        healthBefore = player.getHealth();
+        snowballStart = player.position();
+        Snowball snowball = new Snowball(EntityType.SNOWBALL, arena);
+        snowball.setPos(player.getX(), player.getY() + 1.2, player.getZ() - 4);
+        snowball.setDeltaMovement(0, 0, 1.5);
+        arena.addFreshEntity(snowball);
+    }
+
+    private static void checkSnowball(ServerPlayer player) {
+        float damage = healthBefore - player.getHealth();
+        double pushed = player.getZ() - snowballStart.z;
+        // the 0.01 HP is usually healed again by natural regeneration before this check; the push shows the hit landed
+        boolean ok = damage < 0.5F && pushed > 0.2;
+        BedwarsRandomizer.LOGGER.info("[arenaTest] snowball {} (damage={} HP, pushed back {} blocks)", ok ? "PASS" : "FAIL", damage,
+                String.format(Locale.ROOT, "%.2f", pushed));
+    }
+
+    private static void launchFirework(ServerPlayer player) {
+        ServerLevel arena = player.serverLevel();
+        player.teleportTo(arena, PLATFORM.getX() + 0.5, PLATFORM.getY() + 1, PLATFORM.getZ() + 0.5, 0, 0);
+        player.setHealth(player.getMaxHealth());
+        healthBefore = player.getHealth();
+        ItemStack rocket = new ItemStack(Items.FIREWORK_ROCKET);
+        CompoundTag fireworks = rocket.getOrCreateTagElement("Fireworks");
+        fireworks.putByte("Flight", (byte) 0);
+        CompoundTag explosion = new CompoundTag();
+        explosion.putByte("Type", (byte) 1);
+        explosion.putIntArray("Colors", new int[]{0xFF0000});
+        ListTag explosions = new ListTag();
+        explosions.add(explosion);
+        fireworks.put("Explosions", explosions);
+        arena.addFreshEntity(new FireworkRocketEntity(arena, player.getX(), player.getY() + 1, player.getZ(), rocket));
+    }
+
+    private static void checkFirework(ServerPlayer player) {
+        boolean exploded = player.serverLevel().getEntitiesOfClass(FireworkRocketEntity.class, player.getBoundingBox().inflate(16)).isEmpty();
+        boolean unharmed = player.getHealth() >= healthBefore;
+        BedwarsRandomizer.LOGGER.info("[arenaTest] firework {} (exploded={} player unharmed={})", exploded && unharmed ? "PASS" : "FAIL", exploded, unharmed);
+    }
+
+    /** 4 blocks from the primed TNT, nothing in between. */
+    private static void standNearTnt(ServerPlayer player) {
+        BlockPos stand = TNT_SUPPORT.offset(-4, 1, 0);
+        player.teleportTo(player.serverLevel(), stand.getX() + 0.5, stand.getY(), stand.getZ() + 0.5, -90, 0);
+        player.setHealth(player.getMaxHealth());
+        healthBefore = player.getHealth();
+    }
+
+    private static void checkTntDamageAndGlass(ServerPlayer player) {
+        ServerLevel arena = player.serverLevel();
+        float damage = healthBefore - player.getHealth();
+        int glass = 0;
+        for (int x = -2; x <= 2; x++) {
+            for (int y = 1; y <= 3; y++) {
+                if (arena.getBlockState(TNT_SUPPORT.offset(x, y, 2)).is(Blocks.GLASS)) glass++;
+            }
+        }
+        boolean behindKept = arena.getBlockState(TNT_SUPPORT.offset(0, 1, 3)).is(Blocks.WHITE_WOOL);
+        boolean nextBroken = arena.getBlockState(TNT_SUPPORT.offset(1, 1, 0)).isAir();
+        boolean exploded = arena.getEntitiesOfClass(PrimedTnt.class, new AABB(TNT_SUPPORT).inflate(4)).isEmpty();
+        boolean ok = exploded && damage > 0 && damage <= 8 && glass == 15 && behindKept && nextBroken;
+        BedwarsRandomizer.LOGGER.info("[arenaTest] tnt vs glass {} (exploded={} damage at 4 blocks={} HP, glass left={}/15, wool behind glass kept={}, wool next to tnt broken={})",
+                ok ? "PASS" : "FAIL", exploded, damage, glass, behindKept, nextBroken);
+        player.setHealth(player.getMaxHealth());
+        Arena.teleport(player, arena);
     }
 
     private static void checkTntPrimed(ServerPlayer player) {

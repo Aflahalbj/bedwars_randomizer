@@ -107,5 +107,11 @@
   "gui.bedwarsrandomizer.game.refill_now.glazed_terracotta": "Refill glazed",
   "gui.bedwarsrandomizer.game.refill_now.warped_hyphae": "Refill hyphae",
   "gui.bedwarsrandomizer.game.refill_now.note_block": "Refill note blocks",
-  "gui.bedwarsrandomizer.game.refill_now.tooltip": "Puts back every broken block of this kind right away (from the map when no round is running)."
+  "gui.bedwarsrandomizer.game.refill_now.tooltip": "Puts back every broken block of this kind right away (from the map when no round is running).",
+  "gui.bedwarsrandomizer.map.title": "Choose a Map",
+  "gui.bedwarsrandomizer.map.hint": "Everyone registered is teleported to its lobby",
+  "gui.bedwarsrandomizer.map.current": "%s (current)",
+  "gui.bedwarsrandomizer.map.tooltip": "Pastes this map into the arena (if it isn't there yet) and teleports every registered player to the lobby. Maps: data/bedwarsrandomizer/arena/maps in the mod, or config/bedwarsrandomizer/maps.",
+  "gui.bedwarsrandomizer.map.hint.change": "Changes the arena map (nobody is teleported)",
+  "gui.bedwarsrandomizer.map.tooltip.change": "Pastes this map into the arena if it isn't there yet. Maps: data/bedwarsrandomizer/arena/maps in the mod, or config/bedwarsrandomizer/maps."
 }

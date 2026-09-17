@@ -151,6 +151,8 @@ public final class DropCandidates {
         // only from note blocks
         if (item == Items.ENDER_PEARL) return new Rule(note, note ? 40 : 5, 1, note ? 2 : 1);
         if (item == Items.TOTEM_OF_UNDYING) return new Rule(note, note ? 15 : 1, 1, 1);
+        // clears every effect (poison, weakness...), so it's a strong item too
+        if (item == Items.MILK_BUCKET) return new Rule(note, 15, 1, 1);
         if (item == Items.OBSIDIAN || item == Items.TNT) return new Rule(note, note ? 150 : 9, 1, 2);
         // TNT lights itself when placed during a game, so no flint and steel
         if (item == Items.FLINT_AND_STEEL) return off(12, 1, 1);

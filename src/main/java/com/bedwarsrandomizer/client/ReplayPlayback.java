@@ -115,10 +115,10 @@ public final class ReplayPlayback {
         int last = Math.max(0, data.frameCount - 1);
         int death = Mth.clamp(data.deathFrame, 0, last);
         int afterDeath = Math.min(last, death + 10);
-        // the whole clip once at normal speed (about 5 s), then only the kill again in slow motion from another side:
-        // about 8 s in total
-        takes.add(new Take(TakeType.WIDE, 0, afterDeath, 0.3));
-        takes.add(new Take(TakeType.ORBIT, Math.max(0, death - 8), afterDeath, 0.8));
+        // the whole clip once, then only the final moments again from other angles
+        takes.add(new Take(TakeType.WIDE, 0, afterDeath, 0.5));
+        takes.add(new Take(TakeType.CRANE, Math.max(0, death - 20), afterDeath, 0.5));
+        takes.add(new Take(TakeType.ORBIT, Math.max(0, death - 12), last, 1.8));
     }
 
     ClientLevel level() {
@@ -227,9 +227,9 @@ public final class ReplayPlayback {
     private double speed() {
         int death = data.deathFrame;
         return switch (take().type()) {
-            case WIDE -> 1.0;
+            case WIDE -> replayTime < death - 6 ? 1.0 : 0.5;
             case CRANE -> replayTime < death + 1 ? 0.35 : 0.5;
-            case ORBIT -> 0.5;
+            case ORBIT -> replayTime < death + 1 ? 0.18 : 0.4;
         };
     }
 

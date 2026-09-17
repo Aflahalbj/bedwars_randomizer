@@ -10,6 +10,8 @@ import net.minecraft.nbt.StringTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.level.block.Block;
@@ -85,6 +87,10 @@ public final class RefillArea {
     @Nullable
     public UUID displayId() {
         return displayId;
+    }
+
+    public void playRefillSound(ServerLevel level) {
+        level.playSound(null, displayPos.x, displayPos.y, displayPos.z, SoundEvents.AMETHYST_BLOCK_CHIME, SoundSource.BLOCKS, 1.5F, 1.0F);
     }
 
     public void updateDisplay(ServerLevel level, Map<RandomizerSource, Integer> secondsLeft) {

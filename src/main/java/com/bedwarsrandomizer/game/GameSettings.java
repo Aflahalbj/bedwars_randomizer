@@ -42,7 +42,7 @@ public final class GameSettings {
     public int spawnDistance = 9;
     public int playersPerTeam = 1;
     /** The arena map (see Arena#availableMaps). */
-    public String map = "bw1";
+    public String map = "";
     private final EnumMap<RandomizerSource, Integer> refillSeconds = new EnumMap<>(RandomizerSource.class);
     private final LinkedHashMap<UUID, Registered> players = new LinkedHashMap<>();
 
@@ -166,7 +166,7 @@ public final class GameSettings {
             for (RandomizerSource source : RandomizerSource.values()) {
                 settings.setRefillSeconds(source, GsonHelper.getAsInt(refill, source.key(), DEFAULT_REFILL_SECONDS));
             }
-            settings.map = GsonHelper.getAsString(root, "map", "bw1");
+            settings.map = GsonHelper.getAsString(root, "map", "");
         } catch (IOException | RuntimeException e) {
             BedwarsRandomizer.LOGGER.error("Could not read {}, using default game settings", FILE, e);
         }

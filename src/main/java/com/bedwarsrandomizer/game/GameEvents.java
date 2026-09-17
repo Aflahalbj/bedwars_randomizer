@@ -46,6 +46,7 @@ public final class GameEvents {
         GameSettings.get().unregisterAll();
         ReplayRecorder.get().reset();
         ReplayStorage.clear();
+        Arena.forgetMapChoice();
         server.getGameRules().getRule(GameRules.RULE_DO_IMMEDIATE_RESPAWN).set(false, server);
         Arena.ensurePasted(server);
         Arena.resetMap(server);

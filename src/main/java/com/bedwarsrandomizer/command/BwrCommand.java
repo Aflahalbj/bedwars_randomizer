@@ -93,6 +93,92 @@ public final class BwrCommand {
         return builder.buildFuture();
     };
 
+    /** Who may use a command, for {@code /bwr help}. */
+    private enum Access {
+        PLAYER("everyone registered (and operators)"),
+        HOST("hosts and operators"),
+        OP("operators");
+
+        final String description;
+
+        Access(String description) {
+            this.description = description;
+        }
+    }
+
+    private record HelpEntry(String name, String usage, String description, Access access) {}
+
+    private static final List<HelpEntry> HELP = List.of(
+            new HelpEntry("help", "/bwr help [command]", "Lists the commands you can use, or explains one.", Access.PLAYER),
+            new HelpEntry("gotolobby", "/bwr gotolobby",
+                    "Teleports you to the arena lobby. If no map was chosen since the server started, hosts pick one first.", Access.PLAYER),
+            new HelpEntry("gotoworld", "/bwr gotoworld", "Teleports you back to the overworld spawn.", Access.PLAYER),
+            new HelpEntry("lobbyall", "/bwr lobbyall",
+                    "Choose a map, then every registered player is teleported to the lobby. Same as the [Teleport all to lobby] link.", Access.HOST),
+            new HelpEntry("maps", "/bwr maps", "Opens the map list to change the arena map (nobody is teleported).", Access.HOST),
+            new HelpEntry("nextround", "/bwr nextround", "Starts another round with new teams. Same as the [Next round] link.", Access.HOST),
+            new HelpEntry("endround", "/bwr endround",
+                    "Ends the rounds and shows everyone's stats from all rounds and the MVP. Same as the [End round] link.", Access.HOST),
+            new HelpEntry("replay", "/bwr replay <players> kill <killer> <victim> [id] | list | stop | record",
+                    "Plays a kill replay of this round for players, lists the replays, stops one, or records kills without a round.", Access.HOST),
+            new HelpEntry("regis", "/bwr regis <players>", "Registers players for Bed Wars (until the server stops).", Access.OP),
+            new HelpEntry("regisall", "/bwr regisall", "Registers every online player.", Access.OP),
+            new HelpEntry("unregis", "/bwr unregis <player>", "Removes one registered player.", Access.OP),
+            new HelpEntry("unregisall", "/bwr unregisall", "Removes every registered player.", Access.OP),
+            new HelpEntry("host", "/bwr host add <players> | remove <player> | clear",
+                    "Hosts don't play: they watch as spectators and get the round links and kill replays.", Access.OP),
+            new HelpEntry("start", "/bwr start",
+                    "Starts a round. Needs every registered player online and at least 2 teams; asks for a map first if none was chosen.", Access.OP),
+            new HelpEntry("stop", "/bwr stop", "Stops the running round; everyone goes back to the lobby.", Access.OP),
+            new HelpEntry("setting", "/bwr setting [randomizer]",
+                    "Opens the game settings (timers, team size, players, teams, refills) or the randomizer drop settings.", Access.OP),
+            new HelpEntry("droptest", "/bwr droptest [rolls]", "Rolls the glazed terracotta drops many times and shows how often things drop.", Access.OP));
+
+    private static final SuggestionProvider<CommandSourceStack> HELP_NAMES = (ctx, builder) -> {
+        for (HelpEntry entry : HELP) {
+            if (canUse(ctx.getSource(), entry.access())) builder.suggest(entry.name(), Component.literal(entry.usage()));
+        }
+        return builder.buildFuture();
+    };
+
+    private static boolean canUse(CommandSourceStack source, Access access) {
+        return switch (access) {
+            case PLAYER -> true;
+            case HOST -> isHostOrOp(source);
+            case OP -> source.hasPermission(2);
+        };
+    }
+
+    private static int help(CommandContext<CommandSourceStack> ctx, @javax.annotation.Nullable String name) {
+        CommandSourceStack source = ctx.getSource();
+        if (name == null) {
+            MutableComponent text = prefix().append(Component.literal("Commands you can use (click one for details):").withStyle(ChatFormatting.YELLOW));
+            for (HelpEntry entry : HELP) {
+                if (!canUse(source, entry.access())) continue;
+                text.append(Component.literal("\n " + entry.usage()).withStyle(style -> style.withColor(ChatFormatting.AQUA)
+                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/bwr help " + entry.name()))
+                        .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, Component.literal(entry.description())))));
+            }
+            source.sendSuccess(() -> text, false);
+            return 1;
+        }
+        HelpEntry entry = HELP.stream().filter(e -> e.name().equalsIgnoreCase(name)).findFirst().orElse(null);
+        if (entry == null) {
+            source.sendFailure(Component.literal("Unknown command: " + name + ". Try /bwr help."));
+            return 0;
+        }
+        MutableComponent text = prefix().append(Component.literal(entry.usage()).withStyle(style -> style.withColor(ChatFormatting.AQUA)
+                        .withClickEvent(new ClickEvent(ClickEvent.Action.SUGGEST_COMMAND, "/bwr " + entry.name() + " "))
+                        .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, Component.literal("Click to type it")))))
+                .append(Component.literal("\n " + entry.description()).withStyle(ChatFormatting.WHITE))
+                .append(Component.literal("\n Who: " + entry.access().description).withStyle(ChatFormatting.GRAY));
+        if (!canUse(source, entry.access())) {
+            text.append(Component.literal("\n You can't use this command.").withStyle(ChatFormatting.RED));
+        }
+        source.sendSuccess(() -> text, false);
+        return 1;
+    }
+
     private static final SuggestionProvider<CommandSourceStack> HOSTS = (ctx, builder) -> {
         for (GameSettings.Registered player : GameSettings.get().players()) {
             if (player.host()) builder.suggest(player.name());
@@ -107,6 +193,10 @@ public final class BwrCommand {
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("bwr")
+                .then(Commands.literal("help")
+                        .executes(ctx -> help(ctx, null))
+                        .then(Commands.argument("command", StringArgumentType.word()).suggests(HELP_NAMES)
+                                .executes(ctx -> help(ctx, StringArgumentType.getString(ctx, "command")))))
                 // registered players and operators
                 .then(Commands.literal("gotolobby").executes(BwrCommand::goToLobby))
                 .then(Commands.literal("gotoworld").executes(BwrCommand::goToWorld))
@@ -139,7 +229,7 @@ public final class BwrCommand {
                 .then(op("setting")
                         .executes(BwrCommand::openGameSettings)
                         .then(Commands.literal("randomizer").executes(BwrCommand::openRandomizerSettings)))
-                .then(op("replay")
+                .then(Commands.literal("replay").requires(BwrCommand::isHostOrOp)
                         .then(Commands.literal("record").executes(BwrCommand::recordReplays))
                         .then(Commands.literal("list").executes(BwrCommand::list))
                         .then(Commands.literal("stop").executes(ctx -> stopReplay(ctx, null)))
@@ -162,7 +252,18 @@ public final class BwrCommand {
         return Commands.literal(name).requires(source -> source.hasPermission(2));
     }
 
+    /** Opens the map choice for {@code player} if no map was picked yet this session; returns whether it did. */
+    private static boolean askForMapFirst(CommandContext<CommandSourceStack> ctx, @javax.annotation.Nullable ServerPlayer player, MapSelectPacket.Then then) {
+        if (Arena.isMapChosen() || player == null || !ModNetwork.hasMod(player) || !isHostOrOp(ctx.getSource())) return false;
+        if (BedwarsGame.get().isActive()) return false;
+        MinecraftServer server = ctx.getSource().getServer();
+        ModNetwork.sendMapSelect(player, new MapSelectPacket(Arena.availableMaps(server), GameSettings.get().map, then));
+        ctx.getSource().sendSuccess(() -> prefix().append(Component.literal("Choose a map first.").withStyle(ChatFormatting.YELLOW)), false);
+        return true;
+    }
+
     private static int start(CommandContext<CommandSourceStack> ctx) {
+        if (askForMapFirst(ctx, ctx.getSource().getPlayer(), MapSelectPacket.Then.START)) return 1;
         Component error = BedwarsGame.get().start(ctx.getSource().getServer(), ctx.getSource().getPlayer());
         if (error != null) {
             ctx.getSource().sendFailure(error);
@@ -313,6 +414,11 @@ public final class BwrCommand {
     private static int goToLobby(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
         ServerPlayer player = ctx.getSource().getPlayerOrException();
         if (!mayTeleportSelf(ctx, player)) return 0;
+        if (askForMapFirst(ctx, player, MapSelectPacket.Then.GO_TO_LOBBY)) return 1;
+        if (!Arena.isMapChosen() && !isHostOrOp(ctx.getSource())) {
+            ctx.getSource().sendFailure(Component.literal("No map has been chosen yet. Wait for the host."));
+            return 0;
+        }
         if (!Arena.teleportToLobby(player)) {
             ctx.getSource().sendFailure(Component.literal("The arena dimension is missing."));
             return 0;
@@ -345,7 +451,7 @@ public final class BwrCommand {
             return 0;
         }
         MinecraftServer server = ctx.getSource().getServer();
-        ModNetwork.sendMapSelect(player, new MapSelectPacket(Arena.availableMaps(server), GameSettings.get().map, false));
+        ModNetwork.sendMapSelect(player, new MapSelectPacket(Arena.availableMaps(server), GameSettings.get().map, MapSelectPacket.Then.NOTHING));
         return 1;
     }
 
@@ -358,7 +464,7 @@ public final class BwrCommand {
         }
         ServerPlayer player = ctx.getSource().getPlayer();
         if (player != null && ModNetwork.hasMod(player)) {
-            ModNetwork.sendMapSelect(player, new MapSelectPacket(Arena.availableMaps(server), GameSettings.get().map, true));
+            ModNetwork.sendMapSelect(player, new MapSelectPacket(Arena.availableMaps(server), GameSettings.get().map, MapSelectPacket.Then.TELEPORT_ALL));
             return 1;
         }
         int count = BedwarsGame.teleportAllToLobby(server);

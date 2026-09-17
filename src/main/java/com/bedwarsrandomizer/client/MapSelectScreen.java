@@ -13,25 +13,29 @@ import net.minecraft.network.chat.Component;
 
 import java.util.List;
 
-/** Pick the arena map: from [Teleport all to lobby] everyone registered then goes to its lobby; from /bwr maps it just changes. */
+/** Pick the arena map; afterwards the server does what the screen was opened for (teleport, start, or nothing). */
 public class MapSelectScreen extends Screen {
     private static final String KEY = "gui.bedwarsrandomizer.map.";
     private static final int PER_PAGE = 6;
 
     private final List<String> maps;
     private final String current;
-    private final boolean teleportAll;
+    private final MapSelectPacket.Then then;
     private int page;
 
     public static void open(MapSelectPacket packet) {
-        Minecraft.getInstance().setScreen(new MapSelectScreen(packet.maps(), packet.current(), packet.teleportAll()));
+        Minecraft.getInstance().setScreen(new MapSelectScreen(packet.maps(), packet.current(), packet.then()));
     }
 
-    private MapSelectScreen(List<String> maps, String current, boolean teleportAll) {
+    private MapSelectScreen(List<String> maps, String current, MapSelectPacket.Then then) {
         super(Component.translatable(KEY + "title"));
         this.maps = maps;
         this.current = current;
-        this.teleportAll = teleportAll;
+        this.then = then;
+    }
+
+    private String thenKey() {
+        return then.name().toLowerCase(java.util.Locale.ROOT);
     }
 
     @Override
@@ -44,11 +48,11 @@ public class MapSelectScreen extends Screen {
             String map = maps.get(i);
             Component label = map.equals(current) ? Component.translatable(KEY + "current", map) : Component.literal(map);
             addRenderableWidget(Button.builder(label, b -> {
-                        ModNetwork.CHANNEL.sendToServer(new SelectMapPacket(map, teleportAll));
+                        ModNetwork.CHANNEL.sendToServer(new SelectMapPacket(map, then));
                         onClose();
                     })
                     .bounds(center - 100, top + (i - page * PER_PAGE) * 24, 200, 20)
-                    .tooltip(Tooltip.create(Component.translatable(KEY + (teleportAll ? "tooltip" : "tooltip.change"))))
+                    .tooltip(Tooltip.create(Component.translatable(KEY + "tooltip")))
                     .build());
         }
         int bottom = height - 30;
@@ -69,7 +73,7 @@ public class MapSelectScreen extends Screen {
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         renderBackground(graphics);
         graphics.drawCenteredString(font, title, width / 2, 14, 0xFFFFFF);
-        graphics.drawCenteredString(font, Component.translatable(KEY + (teleportAll ? "hint" : "hint.change")), width / 2, 26, 0xA0A0A0);
+        graphics.drawCenteredString(font, Component.translatable(KEY + "hint." + thenKey()), width / 2, 26, 0xA0A0A0);
         super.render(graphics, mouseX, mouseY, partialTick);
     }
 

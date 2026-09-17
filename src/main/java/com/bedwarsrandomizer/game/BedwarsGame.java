@@ -256,8 +256,35 @@ public final class BedwarsGame {
         broadcast(server, text);
         broadcast(server, topList("Top kills (all rounds)", sessionStats, stats -> stats.kills));
         broadcast(server, topList("Top deaths (all rounds)", sessionStats, stats -> stats.deaths));
+        celebrateMvp(server, sorted.get(0));
+        sendControls(server, Component.literal("Bed Wars ended after " + roundsPlayed + " round(s). ").withStyle(ChatFormatting.YELLOW), false);
         sessionStats.clear();
         roundsPlayed = 0;
+    }
+
+    /** The end of all rounds: "GG!" for everyone, the MVP (most kills) named, with fireworks around them. */
+    private void celebrateMvp(MinecraftServer server, Stats mvp) {
+        UUID mvpId = sessionStats.entrySet().stream().filter(entry -> entry.getValue() == mvp).map(Map.Entry::getKey).findFirst().orElse(null);
+        MutableComponent mvpText = Component.literal("MVP: ").withStyle(ChatFormatting.GOLD)
+                .append(Component.literal(mvp.name).withStyle(ChatFormatting.YELLOW, ChatFormatting.BOLD))
+                .append(Component.literal(" (" + mvp.kills + " kills, " + mvp.finalKills + " final, " + mvp.bedsBroken + " beds, "
+                        + mvp.wins + " wins)").withStyle(ChatFormatting.GRAY));
+        broadcast(server, Component.literal("★ ").withStyle(ChatFormatting.GOLD).append(mvpText));
+        for (GameSettings.Registered registered : GameSettings.get().players()) {
+            ServerPlayer player = server.getPlayerList().getPlayer(registered.id());
+            if (player == null) continue;
+            boolean isMvp = registered.id().equals(mvpId);
+            title(player, Component.literal("GG!").withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD),
+                    isMvp ? Component.literal("You are the MVP!").withStyle(ChatFormatting.YELLOW) : mvpText, 10, 80, 20);
+            player.playNotifySound(isMvp ? SoundEvents.UI_TOAST_CHALLENGE_COMPLETE : SoundEvents.PLAYER_LEVELUP, SoundSource.MASTER, 1.0F, 1.0F);
+            if (isMvp && player.level() instanceof ServerLevel level) {
+                for (int i = 0; i < 4; i++) {
+                    double angle = i * Math.PI / 2;
+                    spawnFirework(level, player.getX() + 2 * Math.cos(angle), player.getY() + 0.5, player.getZ() + 2 * Math.sin(angle),
+                            DyeColor.values()[ThreadLocalRandom.current().nextInt(DyeColor.values().length)]);
+                }
+            }
+        }
     }
 
     /** Ends a running round right away: everyone back to the lobby. Returns false if nothing was running. */
@@ -620,8 +647,15 @@ public final class BedwarsGame {
         if (arena != null) refillAreas.forEach(area -> area.removeDisplay(arena));
     }
 
-    /** [Next round] / [End round] for the hosts, or for the operator who started the round when there is no host. */
     private void sendRoundControls(MinecraftServer server) {
+        sendControls(server, Component.literal("Round " + roundsPlayed + " is over! ").withStyle(ChatFormatting.YELLOW), true);
+    }
+
+    /**
+     * [Next round] (or [New game]) / [End round] / [Change map] for the hosts, or for the operator who started the
+     * round when there is no host.
+     */
+    private void sendControls(MinecraftServer server, MutableComponent header, boolean roundsGoingOn) {
         List<ServerPlayer> targets = new ArrayList<>();
         for (GameSettings.Registered registered : GameSettings.get().players()) {
             ServerPlayer host = registered.host() ? server.getPlayerList().getPlayer(registered.id()) : null;
@@ -631,17 +665,25 @@ public final class BedwarsGame {
             ServerPlayer player = server.getPlayerList().getPlayer(starter);
             if (player != null) targets.add(player);
         }
-        MutableComponent next = Component.literal("[Next round]").withStyle(style -> style.withColor(ChatFormatting.GREEN).withBold(true)
-                .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/bwr nextround"))
-                .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, Component.literal("Start another round (new teams)"))));
-        MutableComponent end = Component.literal("[End round]").withStyle(style -> style.withColor(ChatFormatting.RED).withBold(true)
-                .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/bwr endround"))
-                .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, Component.literal("Stop here and show everyone's stats from all rounds"))));
         for (ServerPlayer target : targets) {
-            target.sendSystemMessage(Component.literal("Round " + roundsPlayed + " is over! ").withStyle(ChatFormatting.YELLOW)
-                    .append(next).append(Component.literal("  ")).append(end));
+            MutableComponent line = header.copy()
+                    .append(link(roundsGoingOn ? "[Next round]" : "[New game]", ChatFormatting.GREEN, "/bwr nextround",
+                            "Start another round (new teams)"));
+            if (roundsGoingOn) {
+                line.append(Component.literal("  ")).append(link("[End round]", ChatFormatting.RED, "/bwr endround",
+                        "Stop here and show everyone's stats from all rounds"));
+            }
+            line.append(Component.literal("  ")).append(link("[Change map]", ChatFormatting.AQUA, "/bwr maps",
+                    "Pick another map for the next round"));
+            target.sendSystemMessage(line);
             target.playNotifySound(SoundEvents.NOTE_BLOCK_PLING.value(), SoundSource.MASTER, 1.0F, 1.0F);
         }
+    }
+
+    private static MutableComponent link(String text, ChatFormatting color, String command, String hover) {
+        return Component.literal(text).withStyle(style -> style.withColor(color).withBold(true)
+                .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, command))
+                .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, Component.literal(hover))));
     }
 
     private void launchFireworks(MinecraftServer server, ServerLevel arena) {
@@ -651,19 +693,23 @@ public final class BedwarsGame {
         for (UUID id : team.members) {
             ServerPlayer player = server.getPlayerList().getPlayer(id);
             if (player == null || player.level() != arena) continue;
-            ItemStack rocket = new ItemStack(Items.FIREWORK_ROCKET);
-            CompoundTag fireworks = rocket.getOrCreateTagElement("Fireworks");
-            fireworks.putByte("Flight", (byte) 1);
-            CompoundTag explosion = new CompoundTag();
-            explosion.putByte("Type", (byte) ThreadLocalRandom.current().nextInt(5));
-            explosion.putIntArray("Colors", new int[]{lastWinner.getFireworkColor(), DyeColor.WHITE.getFireworkColor()});
-            explosion.putBoolean("Trail", true);
-            explosion.putBoolean("Flicker", true);
-            ListTag explosions = new ListTag();
-            explosions.add(explosion);
-            fireworks.put("Explosions", explosions);
-            arena.addFreshEntity(new FireworkRocketEntity(arena, player.getX(), player.getY() + 1, player.getZ(), rocket));
+            spawnFirework(arena, player.getX(), player.getY() + 1, player.getZ(), lastWinner);
         }
+    }
+
+    private static void spawnFirework(ServerLevel level, double x, double y, double z, DyeColor color) {
+        ItemStack rocket = new ItemStack(Items.FIREWORK_ROCKET);
+        CompoundTag fireworks = rocket.getOrCreateTagElement("Fireworks");
+        fireworks.putByte("Flight", (byte) 1);
+        CompoundTag explosion = new CompoundTag();
+        explosion.putByte("Type", (byte) ThreadLocalRandom.current().nextInt(5));
+        explosion.putIntArray("Colors", new int[]{color.getFireworkColor(), DyeColor.WHITE.getFireworkColor()});
+        explosion.putBoolean("Trail", true);
+        explosion.putBoolean("Flicker", true);
+        ListTag explosions = new ListTag();
+        explosions.add(explosion);
+        fireworks.put("Explosions", explosions);
+        level.addFreshEntity(new FireworkRocketEntity(level, x, y, z, rocket));
     }
 
     private void finish(MinecraftServer server) {

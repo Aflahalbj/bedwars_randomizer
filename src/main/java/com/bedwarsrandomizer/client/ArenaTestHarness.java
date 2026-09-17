@@ -61,8 +61,6 @@ import java.util.function.Consumer;
 @Mod.EventBusSubscriber(modid = BedwarsRandomizer.MOD_ID, value = Dist.CLIENT)
 public final class ArenaTestHarness {
     private static final boolean ENABLED = Boolean.parseBoolean(System.getProperty("bwr.arenaTest", "false"));
-    private static final BlockPos ARENA_MIN = new BlockPos(-93, 44, -93);
-    private static final BlockPos ARENA_MAX = new BlockPos(93, 115, 92);
     private static final BlockPos FIREBALL_TARGET = new BlockPos(0, 130, 40);
     private static final BlockPos TNT_SUPPORT = new BlockPos(20, 130, 40);
     /** The stone platform the fireball damage test builds. */
@@ -252,7 +250,8 @@ public final class ArenaTestHarness {
             return;
         }
         int glazed = 0, bedParts = 0, selections = 0;
-        for (BlockPos pos : BlockPos.betweenClosed(ARENA_MIN, ARENA_MAX)) {
+        net.minecraft.world.level.levelgen.structure.BoundingBox box = Arena.mapBounds(player.getServer());
+        for (BlockPos pos : BlockPos.betweenClosed(box.minX(), box.minY(), box.minZ(), box.maxX(), box.maxY(), box.maxZ())) {
             BlockState state = arena.getBlockState(pos);
             if (state.getBlock() instanceof GlazedTerracottaBlock) {
                 glazed++;

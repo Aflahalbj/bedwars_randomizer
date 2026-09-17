@@ -99,6 +99,7 @@ public final class GameTestHarness {
 
     private static void startGame(ServerPlayer player) {
         GameSettings settings = GameSettings.get();
+        Arena.selectMap(player.getServer(), Arena.defaultMap(player.getServer())); // otherwise /bwr start opens the map screen first
         settings.unregisterAll();
         settings.setNumbers(3, 3, 9, 1);
         settings.setRefillSeconds(RandomizerSource.GLAZED_TERRACOTTA, 4);
@@ -286,7 +287,7 @@ public final class GameTestHarness {
             bedsPerMap.append(' ').append(map).append('=').append(beds);
             if (!selected || beds != 8) mapsOk = false;
         }
-        boolean known = Arena.selectMap(server, Arena.BUNDLED_MAP_NAME);
+        boolean known = Arena.selectMap(server, maps.get(0));
         int count = BedwarsGame.teleportAllToLobby(server);
         boolean pass = mapsOk && known && count >= 2 && player.position().distanceTo(new Vec3(0.5, 100, 0.5)) < 2;
         BedwarsRandomizer.LOGGER.info("[gameTest] maps + teleport all to lobby {} (beds per map:{} teleported={})", pass ? "PASS" : "FAIL",

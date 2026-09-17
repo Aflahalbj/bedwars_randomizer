@@ -3,6 +3,7 @@ package com.bedwarsrandomizer.replay;
 import com.bedwarsrandomizer.BedwarsRandomizer;
 import com.bedwarsrandomizer.BwrConfig;
 import com.bedwarsrandomizer.command.BwrCommand;
+import com.bedwarsrandomizer.game.GameSettings;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.ClickEvent;
@@ -320,10 +321,17 @@ public final class ReplayRecorder {
                         .withColor(ChatFormatting.AQUA)
                         .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, command))
                         .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, Component.literal(command)))));
-        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-            if (player.hasPermissions(2)) {
-                player.sendSystemMessage(message);
+        // for the hosts; without a host online, for the operators
+        List<ServerPlayer> targets = new ArrayList<>();
+        for (GameSettings.Registered registered : GameSettings.get().players()) {
+            ServerPlayer host = registered.host() ? server.getPlayerList().getPlayer(registered.id()) : null;
+            if (host != null) targets.add(host);
+        }
+        if (targets.isEmpty()) {
+            for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+                if (player.hasPermissions(2)) targets.add(player);
             }
         }
+        targets.forEach(player -> player.sendSystemMessage(message));
     }
 }

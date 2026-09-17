@@ -34,7 +34,8 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.server.packs.resources.Resource;
+import net.minecraftforge.fml.ModList;
+import java.util.Locale;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LevelAccessor;
 import net.minecraftforge.fml.loading.FMLPaths;
@@ -56,52 +57,68 @@ public final class Arena {
             ResourceKey.create(Registries.DIMENSION, ResourceLocation.fromNamespaceAndPath(BedwarsRandomizer.MOD_ID, "arena"));
     /** Where the map was copied from: pasting here works like standing at 0 100 0 and running //paste. */
     public static final BlockPos PASTE_ORIGIN = new BlockPos(0, 100, 0);
-    /** The default map. */
-    public static final String BUNDLED_MAP_NAME = "bw1";
     /**
-     * Maps inside the mod: {@code data/bedwarsrandomizer/arena/maps/<name>.schem}, WorldEdit schematics copied while
-     * standing at 0 100 0.
+     * Maps inside the mod: {@code src/main/resources/data/bedwarsrandomizer/arena/maps/<name>.schem}, WorldEdit
+     * schematics copied while standing at 0 100 0. The file name (spaces and capitals allowed) is the map's name.
+     * They are read straight from the mod file, since Minecraft's data loading rejects such names.
      */
-    private static final String BUNDLED_MAPS_PATH = "arena/maps";
+    private static final String[] BUNDLED_MAPS_DIR = {"data", BedwarsRandomizer.MOD_ID, "arena", "maps"};
     /** Extra maps without rebuilding the mod: {@code config/bedwarsrandomizer/maps/<name>.schem}. */
     private static final Path MAPS_DIR = FMLPaths.CONFIGDIR.get().resolve(BedwarsRandomizer.MOD_ID).resolve("maps");
     private static final String SCHEMATIC = ".schem";
 
-    /** Every map that can be chosen: bw1 first, then the other maps in the mod, then the config folder's. */
+    /** Every map that can be chosen, by name: the mod's maps, then the config folder's. */
     public static List<String> availableMaps(MinecraftServer server) {
-        Map<String, Resource> bundled = bundledMaps(server);
-        List<String> maps = new ArrayList<>();
-        if (bundled.containsKey(BUNDLED_MAP_NAME)) maps.add(BUNDLED_MAP_NAME);
-        bundled.keySet().stream().filter(name -> !name.equals(BUNDLED_MAP_NAME)).forEach(maps::add);
-        if (Files.isDirectory(MAPS_DIR)) {
-            try (Stream<Path> files = Files.list(MAPS_DIR)) {
-                files.map(file -> file.getFileName().toString())
-                        .filter(name -> name.endsWith(SCHEMATIC))
-                        .map(name -> name.substring(0, name.length() - SCHEMATIC.length()))
-                        .filter(name -> !maps.contains(name))
-                        .sorted()
-                        .forEach(maps::add);
-            } catch (IOException e) {
-                BedwarsRandomizer.LOGGER.error("Could not list {}", MAPS_DIR, e);
-            }
+        List<String> maps = new ArrayList<>(listMaps(bundledMapsDir()).keySet());
+        listMaps(MAPS_DIR).keySet().stream().filter(name -> !maps.contains(name)).forEach(maps::add);
+        return maps;
+    }
+
+    /** The map used when the saved one no longer exists: the first in the list. */
+    @Nullable
+    public static String defaultMap(MinecraftServer server) {
+        List<String> maps = availableMaps(server);
+        return maps.isEmpty() ? null : maps.get(0);
+    }
+
+    @Nullable
+    private static Path bundledMapsDir() {
+        Path dir = ModList.get().getModFileById(BedwarsRandomizer.MOD_ID).getFile().findResource(BUNDLED_MAPS_DIR);
+        return Files.isDirectory(dir) ? dir : null;
+    }
+
+    /** {@code <name>.schem} files in {@code dir}, by name, sorted. */
+    private static Map<String, Path> listMaps(@Nullable Path dir) {
+        Map<String, Path> maps = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        if (dir == null || !Files.isDirectory(dir)) return maps;
+        try (Stream<Path> files = Files.list(dir)) {
+            files.forEach(file -> {
+                String name = file.getFileName().toString();
+                if (name.toLowerCase(Locale.ROOT).endsWith(SCHEMATIC) && Files.isRegularFile(file)) {
+                    maps.putIfAbsent(name.substring(0, name.length() - SCHEMATIC.length()), file);
+                }
+            });
+        } catch (IOException e) {
+            BedwarsRandomizer.LOGGER.error("Could not list maps in {}", dir, e);
         }
         return maps;
     }
 
-    private static Map<String, Resource> bundledMaps(MinecraftServer server) {
-        Map<String, Resource> maps = new TreeMap<>();
-        server.getResourceManager()
-                .listResources(BUNDLED_MAPS_PATH, id -> id.getNamespace().equals(BedwarsRandomizer.MOD_ID) && id.getPath().endsWith(SCHEMATIC))
-                .forEach((id, resource) -> {
-                    String file = id.getPath().substring(id.getPath().lastIndexOf('/') + 1);
-                    maps.put(file.substring(0, file.length() - SCHEMATIC.length()), resource);
-                });
-        return maps;
+    /** Whether someone picked a map since the server started (the round and lobby need that first). */
+    private static boolean mapChosen;
+
+    public static boolean isMapChosen() {
+        return mapChosen;
+    }
+
+    public static void forgetMapChoice() {
+        mapChosen = false;
     }
 
     /** Makes {@code name} the arena map (pasting it now if it isn't the one there). Returns false for unknown maps. */
     public static boolean selectMap(MinecraftServer server, String name) {
         if (!availableMaps(server).contains(name)) return false;
+        mapChosen = true;
         GameSettings settings = GameSettings.get();
         if (!name.equals(settings.map)) {
             settings.map = name;
@@ -132,7 +149,7 @@ public final class Arena {
         try {
             byte[] bytes = readMapBytes(server);
             if (bytes == null) {
-                if (!data.isPasted()) BedwarsRandomizer.LOGGER.error("No arena map found (data/{}/{})", BedwarsRandomizer.MOD_ID, BUNDLED_MAPS_PATH);
+                if (!data.isPasted()) BedwarsRandomizer.LOGGER.error("No arena map found ({} in the mod, or {})", String.join("/", BUNDLED_MAPS_DIR), MAPS_DIR);
                 return;
             }
             String hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-1").digest(bytes));
@@ -182,19 +199,24 @@ public final class Arena {
 
     @Nullable
     private static byte[] readMapBytes(MinecraftServer server) throws IOException {
-        String name = GameSettings.get().map;
-        Map<String, Resource> bundled = bundledMaps(server);
-        Resource resource = bundled.get(name);
-        if (resource == null) {
-            Path file = MAPS_DIR.resolve(name + SCHEMATIC);
-            if (availableMaps(server).contains(name) && Files.isRegularFile(file)) return Files.readAllBytes(file);
-            BedwarsRandomizer.LOGGER.warn("Map {} not found, using {}", name, BUNDLED_MAP_NAME);
-            resource = bundled.get(BUNDLED_MAP_NAME);
-            if (resource == null) return null;
+        GameSettings settings = GameSettings.get();
+        Path file = findMap(settings.map);
+        if (file == null) {
+            String fallback = defaultMap(server);
+            if (fallback == null) return null;
+            BedwarsRandomizer.LOGGER.warn("Map {} not found, using {}", settings.map, fallback);
+            settings.map = fallback;
+            file = findMap(fallback);
+            if (file == null) return null;
         }
-        try (InputStream in = resource.open()) {
-            return in.readAllBytes();
-        }
+        return Files.readAllBytes(file);
+    }
+
+    /** The file of the map called {@code name}: the mod's first, then the config folder's. */
+    @Nullable
+    private static Path findMap(String name) {
+        Path file = listMaps(bundledMapsDir()).get(name);
+        return file != null ? file : listMaps(MAPS_DIR).get(name);
     }
 
     @Nullable
